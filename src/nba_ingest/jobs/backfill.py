@@ -1,22 +1,24 @@
 """Backfill job: scrape and ingest all games for a historical season.
 
-Designed to be run locally one season at a time. Fetches the monthly schedule
-to enumerate which dates had games, then calls the settle logic for each date.
+Wraps Slice G's settle_date(d) by enumerating every date that had games in a
+target season (parsed from BR's monthly schedule pages), then settling each
+date. The MERGE pattern means already-settled rows are idempotently updated;
+interrupting and resuming a backfill is safe.
 
-Usage:
-    BACKFILL_SEASON=2023-24 python -m nba_ingest.jobs.backfill
-    BACKFILL_SEASON=2024-25 python -m nba_ingest.jobs.backfill
+Modes (selected by env var):
 
-Season format: "{start_year}-{end_year_2digit}" (e.g., "2023-24").
+    BACKFILL_SEASON=2023-24
+        Backfill an entire NBA season. Iterates Oct-Jun monthly schedule
+        pages, collects unique game dates, settles each one.
+        Wall time: ~4.5 hours for a 1,230-game regular season (BR's 3s
+        crawl-delay × 4 fetches/game × 1230 games).
 
-A full regular season (~1,230 games) takes roughly 25-30 minutes at the
-3-second crawl-delay. Playoffs add ~20 minutes.
+    BACKFILL_DATES=2024-04-09,2024-04-11
+        Backfill a specific date range (inclusive on both ends). Useful for
+        testing or filling small gaps without re-fetching a whole season.
 
-The job is idempotent: if a game is already in FLAT, the MERGE on the natural
-key (game_id, player_id) leaves the existing row unchanged.
-
-Progress is logged per date so you can interrupt and resume. Already-settled
-dates don't get re-scraped (the MERGE is a no-op if the row exists).
+Per-date failures log and continue — one bad date doesn't halt the rest.
+Aggregate counters are reported at the end.
 """
 
 from __future__ import annotations
@@ -24,11 +26,16 @@ from __future__ import annotations
 import logging
 import os
 import sys
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
+from pathlib import Path
 
-from nba_ingest.fetchers.games import list_games_on_date
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).resolve().parents[3] / ".env", override=False)
+
 from nba_ingest.fetchers.schedule import SEASON_MONTHS, fetch_schedule_month
 from nba_ingest.flatteners.schedule import flatten_schedule
+from nba_ingest.jobs.daily_settle import settle_date
 
 logging.basicConfig(
     level=logging.INFO,
@@ -38,19 +45,11 @@ logger = logging.getLogger(__name__)
 
 
 def _parse_season(season_str: str) -> tuple[int, int]:
-    """Parse "2023-24" -> (2023, 2024).
-
-    Args:
-        season_str: Season in format "YYYY-YY" (e.g., "2023-24").
-
-    Returns:
-        Tuple of (start_year, end_year).
-    """
+    """Parse "2023-24" -> (2023, 2024). End year may be 2-digit."""
     parts = season_str.split("-")
     if len(parts) != 2:
         raise ValueError(f"Invalid season format: {season_str!r}. Expected 'YYYY-YY'.")
     start_year = int(parts[0])
-    # The end year suffix may be 2-digit (24) — reconstruct full year.
     end_suffix = parts[1]
     if len(end_suffix) == 2:
         century = (start_year // 100) * 100
@@ -62,91 +61,108 @@ def _parse_season(season_str: str) -> tuple[int, int]:
     return start_year, end_year
 
 
-def _collect_game_dates(end_year: int) -> list[date]:
-    """Enumerate all dates with games in a season by parsing monthly schedules.
-
-    Args:
-        end_year: BR season end year (e.g., 2024 for 2023-24 season).
-
-    Returns:
-        Sorted list of dates that have games, in chronological order.
-    """
+def _collect_season_dates(end_year: int) -> list[date]:
+    """Enumerate all dates with played games in a BR season via monthly schedules."""
     game_dates: set[date] = set()
 
     for month in SEASON_MONTHS:
         df = fetch_schedule_month(end_year, month)
         if df is None:
             continue
-
         rows = flatten_schedule(end_year, df)
         for row in rows:
             if not row.get("has_score"):
-                continue  # Game hasn't been played yet
+                continue  # Future game; not yet played
             try:
-                # flatten_schedule outputs ISO format "YYYY-MM-DD".
                 game_date = datetime.strptime(row["game_date"], "%Y-%m-%d").date()
                 game_dates.add(game_date)
             except (ValueError, TypeError):
                 logger.warning("Could not parse date: %r", row.get("game_date"))
 
-    sorted_dates = sorted(game_dates)
-    logger.info("Found %d game dates in season %d", len(sorted_dates), end_year)
-    return sorted_dates
+    return sorted(game_dates)
+
+
+def _parse_date_range(range_str: str) -> list[date]:
+    """Parse "YYYY-MM-DD,YYYY-MM-DD" → list of dates from start to end inclusive."""
+    parts = [p.strip() for p in range_str.split(",")]
+    if len(parts) != 2:
+        raise ValueError(
+            f"Invalid range: {range_str!r}. Expected 'YYYY-MM-DD,YYYY-MM-DD'."
+        )
+    start = datetime.strptime(parts[0], "%Y-%m-%d").date()
+    end = datetime.strptime(parts[1], "%Y-%m-%d").date()
+    if end < start:
+        raise ValueError(f"end ({end}) precedes start ({start})")
+    days = (end - start).days
+    return [start + timedelta(days=i) for i in range(days + 1)]
+
+
+def backfill_dates(dates: list[date]) -> dict:
+    """Run settle_date for each given date; aggregate counters across all dates."""
+    totals = {
+        "dates_with_games": 0, "dates_empty": 0, "dates_failed": 0,
+        "games_settled": 0, "games_failed": 0,
+        "games_inserted": 0, "games_updated": 0,
+        "player_box_inserted": 0, "player_box_updated": 0,
+        "player_box_advanced_inserted": 0, "player_box_advanced_updated": 0,
+        "line_scores_inserted": 0, "line_scores_updated": 0,
+        "player_count": 0, "advanced_count": 0,
+    }
+
+    for i, d in enumerate(dates, 1):
+        logger.info("=== [%d/%d] Settling %s ===", i, len(dates), d)
+        try:
+            result = settle_date(d)
+            if result["games_found"] == 0:
+                totals["dates_empty"] += 1
+            else:
+                totals["dates_with_games"] += 1
+                totals["games_settled"] += result["games_settled"]
+                totals["games_failed"] += result["games_failed"]
+                for k, v in result.get("totals", {}).items():
+                    totals[k] += v
+        except Exception as e:
+            logger.error("settle_date(%s) raised: %s", d, e)
+            totals["dates_failed"] += 1
+
+    logger.info(
+        "Backfill complete: %d dates with games, %d empty, %d failed; "
+        "%d games settled (games +%d/~%d, basic +%d/~%d, advanced +%d/~%d, line +%d/~%d)",
+        totals["dates_with_games"], totals["dates_empty"], totals["dates_failed"],
+        totals["games_settled"],
+        totals["games_inserted"], totals["games_updated"],
+        totals["player_box_inserted"], totals["player_box_updated"],
+        totals["player_box_advanced_inserted"], totals["player_box_advanced_updated"],
+        totals["line_scores_inserted"], totals["line_scores_updated"],
+    )
+    return totals
 
 
 def main() -> None:
     season_str = os.environ.get("BACKFILL_SEASON", "").strip()
-    if not season_str:
-        logger.error("BACKFILL_SEASON env var is required. Example: BACKFILL_SEASON=2023-24")
+    range_str = os.environ.get("BACKFILL_DATES", "").strip()
+
+    if not season_str and not range_str:
+        logger.error(
+            "Set BACKFILL_SEASON=2023-24 (full season) "
+            "or BACKFILL_DATES=YYYY-MM-DD,YYYY-MM-DD (range)."
+        )
         sys.exit(1)
 
-    start_year, end_year = _parse_season(season_str)
-    logger.info("Backfilling season %d-%d (BR year: %d)", start_year, end_year, end_year)
+    if range_str:
+        dates = _parse_date_range(range_str)
+        logger.info("Backfilling date range %s (%d days)", range_str, len(dates))
+    else:
+        _, end_year = _parse_season(season_str)
+        logger.info("Backfilling season %s (BR end year: %d)", season_str, end_year)
+        dates = _collect_season_dates(end_year)
+        if not dates:
+            logger.error("No game dates found for season %s. Check schedule pages.", season_str)
+            sys.exit(1)
+        logger.info("Season %s: %d game dates (%s to %s)",
+                    season_str, len(dates), dates[0], dates[-1])
 
-    game_dates = _collect_game_dates(end_year)
-
-    if not game_dates:
-        logger.error("No game dates found for season %d. Check schedule pages.", end_year)
-        sys.exit(1)
-
-    logger.info(
-        "Season %s: %d dates to settle (%s to %s)",
-        season_str,
-        len(game_dates),
-        game_dates[0],
-        game_dates[-1],
-    )
-
-    # Import here to avoid circular deps at module level.
-    from nba_ingest.jobs.daily_settle import main as settle_one_date
-
-    settled = 0
-    skipped = 0
-
-    for game_date in game_dates:
-        # Override the SETTLE_DATE env var for each iteration.
-        os.environ["SETTLE_DATE"] = game_date.isoformat()
-        logger.info("--- Settling %s (%d/%d) ---", game_date, settled + skipped + 1, len(game_dates))
-
-        try:
-            settle_one_date()
-            settled += 1
-        except SystemExit as e:
-            # daily_settle calls sys.exit(0) on no-game days — treat as a skip.
-            if e.code == 0:
-                skipped += 1
-                logger.info("No games on %s — skipped.", game_date)
-            else:
-                logger.error("Settle failed for %s with exit code %s", game_date, e.code)
-        except Exception as e:
-            logger.error("Settle failed for %s: %s", game_date, e)
-
-    logger.info(
-        "Backfill complete for season %s: %d dates settled, %d skipped.",
-        season_str,
-        settled,
-        skipped,
-    )
+    backfill_dates(dates)
 
 
 if __name__ == "__main__":

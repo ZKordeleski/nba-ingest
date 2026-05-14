@@ -262,6 +262,52 @@ Both require architectural decision #2 (officials/inactives schema): how to reco
 
 ---
 
+## Update: Slice H complete (2026-05-14, evening cont.)
+
+**Season backfill is wired up and tested.** Replaces the fragile `os.environ` mutation hack with direct `settle_date(d)` calls. Adds a partial-range mode for testing or filling small gaps.
+
+### What landed in Slice H
+
+1. **`backfill.py` rewritten** from env-var-juggling-and-sys.exit-catching to a clean function-call loop. Imports `settle_date` from `daily_settle` directly.
+2. **Two CLI modes**:
+   - `BACKFILL_SEASON=2023-24` — full season via BR's monthly schedule pages
+   - `BACKFILL_DATES=YYYY-MM-DD,YYYY-MM-DD` — explicit date range
+3. **`backfill_dates(dates: list[date])`** — extracted so other code (e.g., a future "fill the gap since the cron last succeeded" tool) can call programmatically. Aggregates counters across all dates.
+4. **`.env` loading at module entry** — same `override=False` pattern as `daily_settle`.
+
+### Validation: 2-day backfill (2024-04-10 to 2024-04-11)
+
+| Metric | Got |
+|---|---|
+| Dates processed | 2/2 (both had games) |
+| Games settled | 13 (8 on 2024-04-10, 5 on 2024-04-11) |
+| Per-date counts | Day 1: 8, Day 2: 5 — matches BR's schedule |
+| Wall time | ~5 minutes for 13 games |
+
+### Cumulative state across Slices A-H
+
+| Table | BR rows | Per-game avg |
+|---|---|---|
+| games | 27 | — |
+| player_box_basic | 730 | 27/game |
+| player_box_advanced | 606 | 22/game |
+| line_scores | 27 | — |
+
+**Cross-table integrity: every one of the 27 BR-scraped games has both a player_box row and a line_score row.** Zero orphans. The atomic-per-game pipeline holds.
+
+### Ready to run when convenient
+
+- **Full 2023-24 regular season backfill**: `BACKFILL_SEASON=2023-24 python -m nba_ingest.jobs.backfill` — ~4.5 hours, ~1,230 games. Closes the 2023-24 gap in FLAT.games.
+- **Full 2024-25 season backfill**: same with `2024-25`. ~4.5 hours.
+- **Together** these two backfills + the JB seed give the friend complete 1946-2025 coverage.
+
+### Slices E, F, I still ahead
+
+- Slice E (officials) + F (inactives): blocked by architectural decision #2.
+- Slice I (weekly_meta): `weekly_meta.py` still has the three stub functions. Refresh draft career stats / teams / draft classes from BR — analogous patterns to Slices B-D but against draft-class pages.
+
+---
+
 ## Honest assessment: salvage, don't restart
 
 **The repo is ~70% solid and ~30% needs rewrite.** The foundation layers (SQL, fetchers, flatteners, client, tests) have been validated against real Snowflake and real BR data. The job layer (orchestration glue) is broken in ways that require a clean rewrite — but throwing out the validated foundation to start over would lose real work to avoid the messy 30% that needs rewrite anyway.
