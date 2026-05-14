@@ -308,6 +308,47 @@ Both require architectural decision #2 (officials/inactives schema): how to reco
 
 ---
 
+## Update: Slice I.1 complete (2026-05-14, evening cont.)
+
+**`refresh_draft_career_stats` is wired up and validated.** `weekly_meta.py` now writes live BR career stats for recent draft classes into `FLAT.draft_career_stats`. The other two substops (`refresh_teams`, `refresh_draft_classes`) remain documented TODOs requiring net-new fetchers/flatteners.
+
+### What landed in Slice I.1
+
+1. **`weekly_meta.py` rewritten** — replaces stub functions with a real `refresh_draft_career_stats(years)` implementation using `fetch_draft_class` (already existed) + `flatten_draft_career_stats` (already existed) + new `DRAFT_CAREER_STATS_MERGE_SQL`.
+2. **Mode selection**: `WEEKLY_META_YEARS=2020,2021,2022,2023,2024,2025` overrides the default `range(2020, current_year+1)`.
+3. **Bug fix in `flatten_draft_career_stats`**: added `_safe_str()` helper. `str(pd.NaN)` was returning the literal string `"nan"` for missing `college` / `team_abbr` / `player_name` fields. Now `pd.isna()` short-circuits to `None`.
+4. `refresh_teams` and `refresh_draft_classes` are now well-documented TODOs with concrete notes on what's needed (new BR team-page fetcher; new `flatten_draft_picks` for the FLAT.draft schema vs. the existing `flatten_draft_career_stats` for the career-stats schema).
+
+### End-to-end validation (years 2023 + 2024)
+
+| Metric | Got |
+|---|---|
+| Rows inserted (first run) | 118 (58 2023 + 60 2024) ✓ |
+| Rows updated (second run, idempotent) | 118, 0 inserts ✓ |
+| **Wembanyama 2023 career** | 181 games, **23.4 ppg / 11.0 rpg / 3.5 apg, BPM +7.4, WS 17.5** ✓ |
+| 2024 #1 Zaccharie Risacher | 142 games, 11.1 ppg, ATL ✓ |
+| 2024 #2 Alex Sarr | 115 games, 14.4 ppg, WAS ✓ |
+| 2024 #3 Reed Sheppard | 134 games, 10.0 ppg, HOU ✓ |
+| BPM coverage | 110/118 (8 played zero career games; no stats expected) ✓ |
+| `college` for Wembanyama after fix | NULL (was `'nan'` before) ✓ |
+| `college` for Brandon Miller | `Alabama` ✓ |
+| `college` for Scoot Henderson | NULL (G League Ignite, no college) ✓ |
+
+The fix gives the friend usable nullability so queries like `WHERE college IS NULL` correctly find non-college players (international + G League prospects), instead of having to special-case the string `'nan'`.
+
+### Why this matters
+
+The friend can now ask "show me 2023 rookies' career arcs" or "who's outperforming their draft slot" with live data that refreshes weekly. No manual seeding required for years beyond JB's 2023 cutoff.
+
+### Slice I scope still ahead
+
+- `refresh_teams` — needs new BR team-page fetcher (`/teams/{TEAM}/{YEAR}.html`) + flattener for arena / capacity / coach extraction. Goal: fill `arena`/`coach` for the 5 teams missing from JB seed.
+- `refresh_draft_classes` — needs new `flatten_draft_picks` to extract pick-record columns (`person_id`, `round_number`, etc.) from the same BR draft pages. Will populate `FLAT.draft` for 2024 + 2025 (currently empty for those years).
+
+Both are ~1-2 hours of work using the same patterns as Slices B-D / I.1. Unblocked.
+
+---
+
 ## Honest assessment: salvage, don't restart
 
 **The repo is ~70% solid and ~30% needs rewrite.** The foundation layers (SQL, fetchers, flatteners, client, tests) have been validated against real Snowflake and real BR data. The job layer (orchestration glue) is broken in ways that require a clean rewrite — but throwing out the validated foundation to start over would lose real work to avoid the messy 30% that needs rewrite anyway.

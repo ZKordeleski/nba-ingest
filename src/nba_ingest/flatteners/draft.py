@@ -27,6 +27,17 @@ def _safe_float(value) -> Optional[float]:
         return None
 
 
+def _safe_str(value) -> Optional[str]:
+    """Convert a value to a stripped non-empty string, or None.
+
+    pd.isna() catches numpy NaN, which str() otherwise renders as "nan".
+    """
+    if pd.isna(value):
+        return None
+    s = str(value).strip()
+    return s or None
+
+
 def _safe_int(value) -> Optional[int]:
     f = _safe_float(value)
     return int(f) if f is not None else None
@@ -98,9 +109,9 @@ def flatten_draft_career_stats(year: int, df: pd.DataFrame) -> list[dict]:
         rows.append({
             "season": year,
             "overall_pick": overall_pick,
-            "player_name": str(row.get("Player", "")).strip() or None,
-            "team_abbr": str(row.get("Tm", row.get("Team", ""))).strip() or None,
-            "college": str(row.get("College", "")).strip() or None,
+            "player_name": _safe_str(row.get("Player")),
+            "team_abbr": _safe_str(row.get("Tm", row.get("Team"))),
+            "college": _safe_str(row.get("College")),
             "career_games": _safe_int(row.get("G")),
             "career_pts_per_game": _safe_float(row.get("per_game_PTS")),
             "career_reb_per_game": _safe_float(row.get("per_game_TRB")),
