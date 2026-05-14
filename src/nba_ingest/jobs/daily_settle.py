@@ -40,6 +40,7 @@ from nba_ingest.fetchers.boxscore import fetch_boxscore
 from nba_ingest.flatteners.boxscore import (
     flatten_game_row,
     flatten_line_score,
+    flatten_player_box_advanced,
     flatten_player_box_basic,
 )
 
@@ -244,6 +245,55 @@ WHEN NOT MATCHED THEN INSERT (
 """
 
 
+PLAYER_BOX_ADVANCED_MERGE_SQL = """
+MERGE INTO ZK_NBA.FLAT.player_box_advanced AS target
+USING (
+    SELECT
+        $1:game_id::STRING              AS game_id,
+        $1:player_id::STRING            AS player_id,
+        $1:ts_pct::FLOAT                AS ts_pct,
+        $1:efg_pct::FLOAT               AS efg_pct,
+        $1:fg3a_rate::FLOAT             AS fg3a_rate,
+        $1:fta_rate::FLOAT              AS fta_rate,
+        $1:orb_pct::FLOAT               AS orb_pct,
+        $1:drb_pct::FLOAT               AS drb_pct,
+        $1:trb_pct::FLOAT               AS trb_pct,
+        $1:ast_pct::FLOAT               AS ast_pct,
+        $1:stl_pct::FLOAT               AS stl_pct,
+        $1:blk_pct::FLOAT               AS blk_pct,
+        $1:tov_pct::FLOAT               AS tov_pct,
+        $1:usg_pct::FLOAT               AS usg_pct,
+        $1:ortg::INT                    AS ortg,
+        $1:drtg::INT                    AS drtg,
+        $1:bpm::FLOAT                   AS bpm,
+        $1:fetched_at::TIMESTAMP_NTZ    AS fetched_at
+    FROM {stage_file}
+    (FILE_FORMAT => 'ZK_NBA.RAW.JSON_FF')
+) AS src
+-- Synthetic player_id == player_name (see PLAYER_BOX_BASIC_MERGE_SQL comment).
+ON target.game_id = src.game_id AND target.player_id = src.player_id
+WHEN MATCHED THEN UPDATE SET
+    ts_pct = src.ts_pct, efg_pct = src.efg_pct,
+    fg3a_rate = src.fg3a_rate, fta_rate = src.fta_rate,
+    orb_pct = src.orb_pct, drb_pct = src.drb_pct, trb_pct = src.trb_pct,
+    ast_pct = src.ast_pct, stl_pct = src.stl_pct, blk_pct = src.blk_pct,
+    tov_pct = src.tov_pct, usg_pct = src.usg_pct,
+    ortg = src.ortg, drtg = src.drtg, bpm = src.bpm,
+    fetched_at = src.fetched_at
+WHEN NOT MATCHED THEN INSERT (
+    game_id, player_id,
+    ts_pct, efg_pct, fg3a_rate, fta_rate,
+    orb_pct, drb_pct, trb_pct, ast_pct, stl_pct, blk_pct, tov_pct, usg_pct,
+    ortg, drtg, bpm, fetched_at
+) VALUES (
+    src.game_id, src.player_id,
+    src.ts_pct, src.efg_pct, src.fg3a_rate, src.fta_rate,
+    src.orb_pct, src.drb_pct, src.trb_pct, src.ast_pct, src.stl_pct, src.blk_pct, src.tov_pct, src.usg_pct,
+    src.ortg, src.drtg, src.bpm, src.fetched_at
+)
+"""
+
+
 LINE_SCORES_MERGE_SQL = """
 MERGE INTO ZK_NBA.FLAT.line_scores AS target
 USING (
@@ -381,12 +431,18 @@ def settle_one(slug: str) -> dict:
         + flatten_player_box_basic(slug, away_team, away_df, is_home=False)
     )
 
+    advanced_rows = (
+        flatten_player_box_advanced(slug, home_team, box["advanced"].get("home"))
+        + flatten_player_box_advanced(slug, away_team, box["advanced"].get("away"))
+    )
+
     line_row = flatten_line_score(slug, box.get("line_score"))
     line_rows = [line_row] if line_row else []
 
     logger.info(
-        "Flattened: 1 game + %d players + %d line_score (%s %s @ %s %s, %s)",
-        len(player_rows), len(line_rows),
+        "Flattened: 1 game + %d basic + %d advanced + %d line_score "
+        "(%s %s @ %s %s, %s)",
+        len(player_rows), len(advanced_rows), len(line_rows),
         away_team, game_row["away_pts"], home_team, game_row["home_pts"],
         game_row["game_date"],
     )
@@ -402,6 +458,10 @@ def settle_one(slug: str) -> dict:
                 conn, player_rows, PLAYER_BOX_BASIC_MERGE_SQL,
                 "player_box_basic", slug, tmp,
             )
+            adv_inserted, adv_updated = _merge_rows(
+                conn, advanced_rows, PLAYER_BOX_ADVANCED_MERGE_SQL,
+                "player_box_advanced", slug, tmp,
+            )
             line_inserted, line_updated = _merge_rows(
                 conn, line_rows, LINE_SCORES_MERGE_SQL,
                 "line_scores", slug, tmp,
@@ -413,11 +473,14 @@ def settle_one(slug: str) -> dict:
         "game_id": slug,
         "game_row": game_row,
         "player_count": len(player_rows),
+        "advanced_count": len(advanced_rows),
         "line_score_count": len(line_rows),
         "games_inserted": games_inserted,
         "games_updated": games_updated,
         "player_box_inserted": box_inserted,
         "player_box_updated": box_updated,
+        "player_box_advanced_inserted": adv_inserted,
+        "player_box_advanced_updated": adv_updated,
         "line_scores_inserted": line_inserted,
         "line_scores_updated": line_updated,
     }
@@ -425,16 +488,17 @@ def settle_one(slug: str) -> dict:
 
 def main() -> None:
     slug = os.environ.get("SETTLE_SLUG", "").strip() or DEFAULT_SLUG
-    logger.info("Slice C — settling slug: %s", slug)
+    logger.info("Slice D — settling slug: %s", slug)
     result = settle_one(slug)
     logger.info(
-        "Slice C done: game_id=%s, %s %s @ %s %s — games (+%d/~%d), "
-        "player_box (+%d/~%d), line_scores (+%d/~%d)",
+        "Slice D done: game_id=%s, %s %s @ %s %s — games (+%d/~%d), "
+        "basic (+%d/~%d), advanced (+%d/~%d), line_scores (+%d/~%d)",
         result["game_id"],
         result["game_row"]["away_team_abbr"], result["game_row"]["away_pts"],
         result["game_row"]["home_team_abbr"], result["game_row"]["home_pts"],
         result["games_inserted"], result["games_updated"],
         result["player_box_inserted"], result["player_box_updated"],
+        result["player_box_advanced_inserted"], result["player_box_advanced_updated"],
         result["line_scores_inserted"], result["line_scores_updated"],
     )
 

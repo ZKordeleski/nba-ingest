@@ -217,6 +217,62 @@ def test_flatten_player_box_basic_is_home_flag():
     assert all(r["is_home"] is False for r in away_rows)
 
 
+def test_flatten_player_box_advanced_player_id_is_synthetic_name():
+    """flatten_player_box_advanced reads player_name and uses it as player_id.
+
+    The original buggy version never extracted the Player column — every row
+    had player_id=None and no player_name, making the data unattributable.
+    """
+    df = pd.DataFrame({
+        "Player": ["Nikola Jokic", "Jamal Murray", "Team Totals"],
+        "MP":     ["32:15", "38:42", "240:00"],
+        "TS%":    [0.611, 0.500, 0.500],
+        "eFG%":   [0.625, 0.531, 0.500],
+        "3PAr":   [0.167, 0.500, 0.393],
+        "FTr":    [0.278, 0.250, 0.250],
+        "ORB%":   [12.0, 2.0, 0.0],
+        "DRB%":   [25.0, 10.0, 0.0],
+        "TRB%":   [18.5, 6.0, 0.0],
+        "AST%":   [40.0, 25.0, 0.0],
+        "STL%":   [3.0, 2.0, 0.0],
+        "BLK%":   [4.0, 0.0, 0.0],
+        "TOV%":   [10.0, 12.0, 0.0],
+        "USG%":   [30.0, 25.0, 0.0],
+        "ORtg":   [125, 110, 115],
+        "DRtg":   [95, 105, 100],
+        "BPM":    [8.5, 3.2, 0.0],
+    })
+    rows = flatten_player_box_advanced("20230612ODAL", "DEN", df)
+    assert len(rows) == 2, "Should drop Team Totals row"
+    for r in rows:
+        assert r["player_id"] is not None
+        assert r["player_id"] in ("Nikola Jokic", "Jamal Murray")
+    # Verify stat propagation
+    jokic = next(r for r in rows if r["player_id"] == "Nikola Jokic")
+    assert jokic["bpm"] == 8.5
+    assert jokic["usg_pct"] == 30.0
+
+
+def test_flatten_player_box_advanced_skips_dnp_rows():
+    """DNP rows have no advanced stats (BR fills empty). Skip them."""
+    df = pd.DataFrame({
+        "Player": ["Nikola Jokic", "Bench Bob", "Team Totals"],
+        "TS%":    [0.611, None, 0.500],
+        "BPM":    [8.5, None, 0.0],
+        "USG%":   [30.0, None, 0.0],
+        "eFG%":   [0.625, None, 0.500],
+        "3PAr": [0.167, None, 0.393], "FTr": [0.278, None, 0.250],
+        "ORB%": [12.0, None, 0.0], "DRB%": [25.0, None, 0.0], "TRB%": [18.5, None, 0.0],
+        "AST%": [40.0, None, 0.0], "STL%": [3.0, None, 0.0], "BLK%": [4.0, None, 0.0],
+        "TOV%": [10.0, None, 0.0],
+        "ORtg": [125, None, 115], "DRtg": [95, None, 100],
+    })
+    rows = flatten_player_box_advanced("20230612ODAL", "DEN", df)
+    # Only Jokic — Bench Bob skipped (no TS%, no BPM); Team Totals dropped.
+    assert len(rows) == 1
+    assert rows[0]["player_id"] == "Nikola Jokic"
+
+
 def test_flatten_player_box_basic_player_id_is_synthetic_name():
     """Interim: player_id is set to player_name (NOT NULL constraint).
 

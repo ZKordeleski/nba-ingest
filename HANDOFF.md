@@ -181,6 +181,46 @@ The line score reveals SAS's run: 16 Q1 (down 9), then 32-24 in Q2, then 29-12 i
 
 ---
 
+## Update: Slice D complete (2026-05-14, evening cont.)
+
+**Four tables now write atomically per `settle_one()`: `games` + `player_box_basic` + `player_box_advanced` + `line_scores`.**
+
+### What landed in Slice D
+
+1. **Fixed `flatten_player_box_advanced`** — the original version never extracted the `Player` column. Every row had `player_id=None` and no `player_name`, making the data unattributable. Now reads `player_name` and uses it as the synthetic `player_id` (same pattern as basic).
+2. **DNP filter in advanced** — BR fills advanced cells with empty strings for DNPs. A row with both `TS% is None` and `BPM is None` is skipped (no advanced stats worth storing). 4 DNPs were correctly filtered for this game.
+3. **`PLAYER_BOX_ADVANCED_MERGE_SQL`** — keyed on `(game_id, player_id)`. With synthetic ID convention, advanced rows JOIN cleanly to basic rows on the same key.
+4. **Wired into `settle_one()`** — pulls home + away advanced DataFrames from the boxscore fetch, flattens both, MERGEs as a single staged file.
+5. **Two new unit tests**: `test_flatten_player_box_advanced_player_id_is_synthetic_name` (verifies the fix) and `test_flatten_player_box_advanced_skips_dnp_rows` (locks in DNP filtering).
+
+### End-to-end validation
+
+| Check | Expected | Got |
+|---|---|---|
+| First run (advanced) | (~20, 0) | **(20, 0)** ✓ |
+| Second run (advanced) | (0, 20) | **(0, 20)** ✓ idempotent |
+| Advanced row count | 24 basic − 4 DNPs | 20 ✓ |
+| **Wembanyama BPM** | populated, strong | **8.9** ✓ |
+| Wembanyama net rating | strong positive | ORtg 106 / DRtg 87 = **+19** ✓ |
+| BPM coverage | 20/20 | 20/20 ✓ |
+| Advanced rows JOIN to basic on (game_id, player_id) | 0 orphans | 0 ✓ |
+| Top game BPM | small-minutes outlier OK | David Duke Jr. 35.2 (3-min stint), then Wemby 8.9 |
+
+### Wembanyama's advanced profile (one game, contextualizes basic)
+
+| Metric | Value | Reading |
+|---|---|---|
+| TS% | 0.474 | Modest shooting efficiency |
+| USG% | 29.5 | High usage (star-level) |
+| ORtg | 106 | Strong scoring |
+| DRtg | 87 | Excellent defense |
+| BPM | +8.9 | High overall impact |
+| Real basic line | 18p / 6a / 7r / **7 blk** / +15 | The 7 blocks explain the DRtg 87 |
+
+Two independent stats systems (basic counting stats and advanced rate stats) tell the same story: Wembanyama was the most impactful player on the floor. 33 unit tests pass.
+
+---
+
 ## Honest assessment: salvage, don't restart
 
 **The repo is ~70% solid and ~30% needs rewrite.** The foundation layers (SQL, fetchers, flatteners, client, tests) have been validated against real Snowflake and real BR data. The job layer (orchestration glue) is broken in ways that require a clean rewrite — but throwing out the validated foundation to start over would lose real work to avoid the messy 30% that needs rewrite anyway.

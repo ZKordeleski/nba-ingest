@@ -182,13 +182,21 @@ def flatten_player_box_advanced(
 ) -> list[dict]:
     """Flatten an advanced box score DataFrame into player_box_advanced rows.
 
+    Extracts player_name from the 'Player' column so each row is attributable.
+    Uses the synthetic player_id = player_name convention (same as basic) until
+    decision #3 implements real BR player_id extraction.
+
+    DNP rows in BR's advanced box have empty stat cells; we skip them rather
+    than insert all-null rows (the schema isn't useful without any stats).
+
     Args:
         game_slug: BR game slug.
-        team_abbr: Team abbreviation.
+        team_abbr: Team abbreviation. Not stored in player_box_advanced (PK is
+            game_id+player_id), but included for diagnostics/logging.
         df: Raw DataFrame from box-{TEAM}-game-advanced table.
 
     Returns:
-        List of dicts, one per player.
+        List of dicts, one per non-DNP player.
     """
     if df is None or df.empty:
         return []
@@ -200,10 +208,19 @@ def flatten_player_box_advanced(
     now = _now_utc()
 
     for _, row in df.iterrows():
+        player_name = str(row.get("Player", row.iloc[0])).strip()
+        if not player_name:
+            continue
+        ts_pct = _safe_float(row.get("TS%"))
+        bpm = _safe_float(row.get("BPM"))
+        # Skip DNP rows: BR fills advanced stats with empty strings for DNPs.
+        # A row with no TS% AND no BPM has no advanced stats worth storing.
+        if ts_pct is None and bpm is None:
+            continue
         rows.append({
             "game_id": game_slug,
-            "player_id": None,       # Matched by player_name on MERGE
-            "ts_pct": _safe_float(row.get("TS%")),
+            "player_id": player_name,  # Synthetic interim (decision #3 pending)
+            "ts_pct": ts_pct,
             "efg_pct": _safe_float(row.get("eFG%")),
             "fg3a_rate": _safe_float(row.get("3PAr")),
             "fta_rate": _safe_float(row.get("FTr")),
@@ -217,7 +234,7 @@ def flatten_player_box_advanced(
             "usg_pct": _safe_float(row.get("USG%")),
             "ortg": _safe_int(row.get("ORtg")),
             "drtg": _safe_int(row.get("DRtg")),
-            "bpm": _safe_float(row.get("BPM")),
+            "bpm": bpm,
             "fetched_at": now,
         })
 
