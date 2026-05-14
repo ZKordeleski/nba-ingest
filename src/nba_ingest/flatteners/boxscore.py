@@ -121,15 +121,18 @@ def flatten_player_box_basic(
     now = _now_utc()
 
     for _, row in df.iterrows():
-        mp = _parse_minutes(row.get("MP"))
-        # Skip rows where player didn't play (None minutes = did not play).
-        # We still include DNP rows with 0.0 minutes per spec.
-        if mp is None:
-            mp = 0.0
+        raw_mp = _parse_minutes(row.get("MP"))
+        is_dnp = raw_mp is None  # "Did Not Play" / "Did Not Dress" / "Player Suspended"
+        mp = raw_mp if raw_mp is not None else 0.0
+
+        # DNP players have 0 for all counting stats (not None). Percentage stats
+        # remain None because 0/0 is undefined.  Matches seed SQL's COALESCE(..., 0).
+        def _int(val: object) -> Optional[int]:
+            return 0 if is_dnp else _safe_int(val)
 
         rows.append({
-            "game_id": game_slug,   # BR slug used as game_id; remapped on MERGE if NBA IDs differ
-            "player_id": None,      # BR doesn't expose player IDs in the HTML; mapped later via name
+            "game_id": game_slug,
+            "player_id": None,
             "player_name": str(row.get("Player", row.iloc[0])).strip(),
             "team_id": None,
             "team_name": None,
@@ -138,28 +141,28 @@ def flatten_player_box_basic(
             "game_date": game_date,
             "season": None,
             "game_type": None,
-            "is_win": None,         # Determined after fetching both teams' line scores
+            "is_win": None,
             "is_home": is_home,
             "minutes_played": mp,
-            "pts": _safe_int(row.get("PTS")),
-            "ast": _safe_int(row.get("AST")),
-            "reb": _safe_int(row.get("TRB")),
-            "oreb": _safe_int(row.get("ORB")),
-            "dreb": _safe_int(row.get("DRB")),
-            "stl": _safe_int(row.get("STL")),
-            "blk": _safe_int(row.get("BLK")),
-            "tov": _safe_int(row.get("TOV")),
-            "pf": _safe_int(row.get("PF")),
-            "fgm": _safe_int(row.get("FG")),
-            "fga": _safe_int(row.get("FGA")),
-            "fg_pct": _safe_float(row.get("FG%")),
-            "fg3m": _safe_int(row.get("3P")),
-            "fg3a": _safe_int(row.get("3PA")),
-            "fg3_pct": _safe_float(row.get("3P%")),
-            "ftm": _safe_int(row.get("FT")),
-            "fta": _safe_int(row.get("FTA")),
-            "ft_pct": _safe_float(row.get("FT%")),
-            "plus_minus": _safe_float(row.get("+/-")),
+            "pts": _int(row.get("PTS")),
+            "ast": _int(row.get("AST")),
+            "reb": _int(row.get("TRB")),
+            "oreb": _int(row.get("ORB")),
+            "dreb": _int(row.get("DRB")),
+            "stl": _int(row.get("STL")),
+            "blk": _int(row.get("BLK")),
+            "tov": _int(row.get("TOV")),
+            "pf": _int(row.get("PF")),
+            "fgm": _int(row.get("FG")),
+            "fga": _int(row.get("FGA")),
+            "fg_pct": None if is_dnp else _safe_float(row.get("FG%")),
+            "fg3m": _int(row.get("3P")),
+            "fg3a": _int(row.get("3PA")),
+            "fg3_pct": None if is_dnp else _safe_float(row.get("3P%")),
+            "ftm": _int(row.get("FT")),
+            "fta": _int(row.get("FTA")),
+            "ft_pct": None if is_dnp else _safe_float(row.get("FT%")),
+            "plus_minus": None if is_dnp else _safe_float(row.get("+/-")),
             "source": "br_scrape",
             "fetched_at": now,
         })

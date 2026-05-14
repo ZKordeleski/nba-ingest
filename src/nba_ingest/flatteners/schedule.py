@@ -11,7 +11,7 @@ FLAT — game data comes from the individual box score pages.
 from __future__ import annotations
 
 import logging
-import re
+from datetime import datetime
 from typing import Optional
 
 import pandas as pd
@@ -50,9 +50,16 @@ def flatten_schedule(year: int, df: pd.DataFrame) -> list[dict]:
         visitor_col = next((c for c in df.columns if "Visitor" in str(c)), df.columns[2] if len(df.columns) > 2 else None)
         home_col = next((c for c in df.columns if "Home" in str(c)), df.columns[4] if len(df.columns) > 4 else None)
 
+        # Parse BR date string "Mon, Apr 1, 2024" → ISO "2024-04-01"
+        try:
+            game_date = datetime.strptime(date_val, "%a, %b %d, %Y").strftime("%Y-%m-%d")
+        except ValueError:
+            logger.warning("Could not parse date: %r — skipping row", date_val)
+            continue
+
         rows.append({
             "season_year": year,
-            "game_date": date_val,
+            "game_date": game_date,
             "away_team": str(row[visitor_col]).strip() if visitor_col else None,
             "home_team": str(row[home_col]).strip() if home_col else None,
             "has_score": has_score,

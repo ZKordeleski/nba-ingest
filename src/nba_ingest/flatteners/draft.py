@@ -33,10 +33,31 @@ def _safe_int(value) -> Optional[int]:
 
 
 def _flatten_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Flatten MultiIndex column headers."""
-    if isinstance(df.columns, pd.MultiIndex):
-        # Take the innermost level for the column name.
-        df.columns = [col[-1] if isinstance(col, tuple) else col for col in df.columns]
+    """Flatten MultiIndex column headers, prefixing duplicates with their section.
+
+    The draft table has multiple sections sharing short names (e.g., both
+    'Totals' and 'Per Game' have a 'PTS' column). A naive last-level flatten
+    produces duplicate column names, making row.get("PTS") return a Series.
+    We prefix duplicate short names with their section: 'per_game_PTS'.
+    """
+    if not isinstance(df.columns, pd.MultiIndex):
+        return df
+    short_names = [str(col[-1]) if isinstance(col, tuple) else str(col) for col in df.columns]
+    counts: dict[str, int] = {}
+    for s in short_names:
+        counts[s] = counts.get(s, 0) + 1
+    new_cols = []
+    for col in df.columns:
+        if isinstance(col, tuple):
+            short = str(col[-1])
+            if counts[short] > 1 and len(col) > 1:
+                section = str(col[-2]).lower().replace(" ", "_")
+                new_cols.append(f"{section}_{short}")
+            else:
+                new_cols.append(short)
+        else:
+            new_cols.append(str(col))
+    df.columns = new_cols
     return df
 
 
@@ -81,9 +102,9 @@ def flatten_draft_career_stats(year: int, df: pd.DataFrame) -> list[dict]:
             "team_abbr": str(row.get("Tm", row.get("Team", ""))).strip() or None,
             "college": str(row.get("College", "")).strip() or None,
             "career_games": _safe_int(row.get("G")),
-            "career_pts_per_game": _safe_float(row.get("PTS")),
-            "career_reb_per_game": _safe_float(row.get("TRB")),
-            "career_ast_per_game": _safe_float(row.get("AST")),
+            "career_pts_per_game": _safe_float(row.get("per_game_PTS")),
+            "career_reb_per_game": _safe_float(row.get("per_game_TRB")),
+            "career_ast_per_game": _safe_float(row.get("per_game_AST")),
             "career_fg_pct": _safe_float(row.get("FG%")),
             "career_fg3_pct": _safe_float(row.get("3P%")),
             "career_ft_pct": _safe_float(row.get("FT%")),
