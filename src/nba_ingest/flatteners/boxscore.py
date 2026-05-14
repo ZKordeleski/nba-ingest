@@ -130,10 +130,15 @@ def flatten_player_box_basic(
         def _int(val: object) -> Optional[int]:
             return 0 if is_dnp else _safe_int(val)
 
+        player_name = str(row.get("Player", row.iloc[0])).strip()
         rows.append({
             "game_id": game_slug,
-            "player_id": None,
-            "player_name": str(row.get("Player", row.iloc[0])).strip(),
+            # player_id is NOT NULL in the DDL. Interim: use player_name as a
+            # synthetic ID until the BR player-slug extraction (decision #3) is
+            # implemented in a later slice. Reversible: a future UPDATE can swap
+            # synthetic IDs for real NBA player_ids by joining on player_name.
+            "player_id": player_name,
+            "player_name": player_name,
             "team_id": None,
             "team_name": None,
             "team_abbr": team_abbr,

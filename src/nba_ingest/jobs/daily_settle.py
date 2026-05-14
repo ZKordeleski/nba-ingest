@@ -37,7 +37,10 @@ load_dotenv(Path(__file__).resolve().parents[3] / ".env", override=False)
 
 from nba_ingest import snowflake_client
 from nba_ingest.fetchers.boxscore import fetch_boxscore
-from nba_ingest.flatteners.boxscore import flatten_game_row
+from nba_ingest.flatteners.boxscore import (
+    flatten_game_row,
+    flatten_player_box_basic,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -49,7 +52,7 @@ logger = logging.getLogger(__name__)
 # BR slug format: YYYYMMDD + "0" (digit separator) + HOME team (3 chars).
 DEFAULT_SLUG = "202404090MEM"
 
-STAGE_PATH = "@ZK_NBA.RAW.INGEST_STAGE/flat/games"
+STAGE_PATH = "@ZK_NBA.RAW.INGEST_STAGE/flat"
 
 GAMES_MERGE_SQL = f"""
 MERGE INTO ZK_NBA.FLAT.games AS target
@@ -165,14 +168,124 @@ WHEN NOT MATCHED THEN INSERT (
 """
 
 
+PLAYER_BOX_BASIC_MERGE_SQL = """
+MERGE INTO ZK_NBA.FLAT.player_box_basic AS target
+USING (
+    SELECT
+        $1:game_id::STRING              AS game_id,
+        $1:player_id::STRING            AS player_id,
+        $1:player_name::STRING          AS player_name,
+        $1:team_id::INT                 AS team_id,
+        $1:team_name::STRING            AS team_name,
+        $1:team_abbr::STRING            AS team_abbr,
+        $1:opponent_team_name::STRING   AS opponent_team_name,
+        $1:game_date::DATE              AS game_date,
+        $1:season::INT                  AS season,
+        $1:game_type::STRING            AS game_type,
+        $1:is_win::BOOLEAN              AS is_win,
+        $1:is_home::BOOLEAN             AS is_home,
+        $1:minutes_played::FLOAT        AS minutes_played,
+        $1:pts::INT                     AS pts,
+        $1:ast::INT                     AS ast,
+        $1:reb::INT                     AS reb,
+        $1:oreb::INT                    AS oreb,
+        $1:dreb::INT                    AS dreb,
+        $1:stl::INT                     AS stl,
+        $1:blk::INT                     AS blk,
+        $1:tov::INT                     AS tov,
+        $1:pf::INT                      AS pf,
+        $1:fgm::INT                     AS fgm,
+        $1:fga::INT                     AS fga,
+        $1:fg_pct::FLOAT                AS fg_pct,
+        $1:fg3m::INT                    AS fg3m,
+        $1:fg3a::INT                    AS fg3a,
+        $1:fg3_pct::FLOAT               AS fg3_pct,
+        $1:ftm::INT                     AS ftm,
+        $1:fta::INT                     AS fta,
+        $1:ft_pct::FLOAT                AS ft_pct,
+        $1:plus_minus::FLOAT            AS plus_minus,
+        $1:source::STRING               AS source,
+        $1:fetched_at::TIMESTAMP_NTZ    AS fetched_at
+    FROM {stage_file}
+    (FILE_FORMAT => 'ZK_NBA.RAW.JSON_FF')
+) AS src
+-- MERGE key is (game_id, player_name). The PK is (game_id, player_id) but
+-- BR scrapes leave player_id NULL until decision #3 (player_id from BR slug)
+-- is implemented in a later slice. NULL = NULL is FALSE in SQL, so matching
+-- on player_id alone would always insert new rows.
+ON target.game_id = src.game_id AND target.player_name = src.player_name
+WHEN MATCHED THEN UPDATE SET
+    team_abbr = src.team_abbr,
+    game_date = src.game_date,
+    is_home = src.is_home,
+    minutes_played = src.minutes_played,
+    pts = src.pts, ast = src.ast, reb = src.reb, oreb = src.oreb, dreb = src.dreb,
+    stl = src.stl, blk = src.blk, tov = src.tov, pf = src.pf,
+    fgm = src.fgm, fga = src.fga, fg_pct = src.fg_pct,
+    fg3m = src.fg3m, fg3a = src.fg3a, fg3_pct = src.fg3_pct,
+    ftm = src.ftm, fta = src.fta, ft_pct = src.ft_pct,
+    plus_minus = src.plus_minus,
+    source = src.source,
+    fetched_at = src.fetched_at
+WHEN NOT MATCHED THEN INSERT (
+    game_id, player_id, player_name, team_id, team_name, team_abbr,
+    opponent_team_name, game_date, season, game_type, is_win, is_home,
+    minutes_played, pts, ast, reb, oreb, dreb, stl, blk, tov, pf,
+    fgm, fga, fg_pct, fg3m, fg3a, fg3_pct, ftm, fta, ft_pct,
+    plus_minus, source, fetched_at
+) VALUES (
+    src.game_id, src.player_id, src.player_name, src.team_id, src.team_name, src.team_abbr,
+    src.opponent_team_name, src.game_date, src.season, src.game_type, src.is_win, src.is_home,
+    src.minutes_played, src.pts, src.ast, src.reb, src.oreb, src.dreb, src.stl, src.blk, src.tov, src.pf,
+    src.fgm, src.fga, src.fg_pct, src.fg3m, src.fg3a, src.fg3_pct, src.ftm, src.fta, src.ft_pct,
+    src.plus_minus, src.source, src.fetched_at
+)
+"""
+
+
 def _write_ndjson(records: list[dict], path: Path) -> None:
     with path.open("w") as f:
         for record in records:
             f.write(json.dumps(record, default=str) + "\n")
 
 
+def _merge_rows(
+    conn,
+    rows: list[dict],
+    merge_sql_template: str,
+    file_label: str,
+    slug: str,
+    tmpdir: Path,
+) -> tuple[int, int]:
+    """PUT NDJSON of `rows` to the stage and run the MERGE.
+
+    Returns (inserted_count, updated_count) extracted from MERGE result.
+    """
+    if not rows:
+        return (0, 0)
+    tmp_path = tmpdir / f"{file_label}_{slug}.ndjson"
+    _write_ndjson(rows, tmp_path)
+    merge_sql = merge_sql_template.replace("{stage_file}", f"{STAGE_PATH}/{tmp_path.name}")
+    result = snowflake_client.put_and_merge(conn, tmp_path, STAGE_PATH, merge_sql)
+    # MERGE returns one row per execution: (inserted_count, updated_count)
+    merge_rows = result["merge"]
+    if merge_rows and len(merge_rows[0]) >= 2:
+        inserted, updated = merge_rows[0][0], merge_rows[0][1]
+    else:
+        inserted, updated = 0, 0
+    logger.info("[%s] MERGE: %d inserted, %d updated", file_label, inserted, updated)
+    return inserted, updated
+
+
 def settle_one(slug: str) -> dict:
-    """Settle a single game by slug. Returns the flattened row written."""
+    """Settle a single game by slug.
+
+    Writes:
+        - one FLAT.games row
+        - N FLAT.player_box_basic rows (~20-30 per game)
+
+    Returns a dict summarizing the work done.
+    """
     logger.info("Fetching boxscore for %s", slug)
     box = fetch_boxscore(slug)
 
@@ -186,7 +299,8 @@ def settle_one(slug: str) -> dict:
     if home_df is None or away_df is None:
         raise RuntimeError(f"Missing basic box DataFrame(s) for {slug}")
 
-    row = flatten_game_row(
+    # Flatten: one games row + many player_box rows (home + away).
+    game_row = flatten_game_row(
         game_slug=slug,
         home_team=home_team,
         away_team=away_team,
@@ -194,35 +308,59 @@ def settle_one(slug: str) -> dict:
         away_basic_df=away_df,
         line_score_df=box.get("line_score"),
     )
-    if row is None:
+    if game_row is None:
         raise RuntimeError(f"flatten_game_row returned None for {slug}")
 
+    player_rows = (
+        flatten_player_box_basic(slug, home_team, home_df, is_home=True)
+        + flatten_player_box_basic(slug, away_team, away_df, is_home=False)
+    )
+
     logger.info(
-        "Flattened game row: %s %s @ %s %s (%s)",
-        away_team, row["away_pts"], home_team, row["home_pts"], row["game_date"],
+        "Flattened: 1 game row (%s %s @ %s %s, %s) + %d player rows",
+        away_team, game_row["away_pts"], home_team, game_row["home_pts"],
+        game_row["game_date"], len(player_rows),
     )
 
     conn = snowflake_client.connect()
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
-            tmp_path = Path(tmpdir) / f"games_{slug}.ndjson"
-            _write_ndjson([row], tmp_path)
-            merge_sql = GAMES_MERGE_SQL.replace("{stage_file}", f"{STAGE_PATH}/{tmp_path.name}")
-            result = snowflake_client.put_and_merge(conn, tmp_path, STAGE_PATH, merge_sql)
-            logger.info("MERGE result: %s", result["merge"])
+            tmp = Path(tmpdir)
+            games_inserted, games_updated = _merge_rows(
+                conn, [game_row], GAMES_MERGE_SQL, "games", slug, tmp,
+            )
+            box_inserted, box_updated = _merge_rows(
+                conn, player_rows, PLAYER_BOX_BASIC_MERGE_SQL,
+                "player_box_basic", slug, tmp,
+            )
     finally:
         conn.close()
 
-    return row
+    return {
+        "game_id": slug,
+        "game_row": game_row,
+        "player_count": len(player_rows),
+        "games_inserted": games_inserted,
+        "games_updated": games_updated,
+        "player_box_inserted": box_inserted,
+        "player_box_updated": box_updated,
+    }
 
 
 def main() -> None:
     slug = os.environ.get("SETTLE_SLUG", "").strip() or DEFAULT_SLUG
-    logger.info("Slice A — settling slug: %s", slug)
-    row = settle_one(slug)
-    logger.info("Slice A done: game_id=%s, %s %s @ %s %s",
-                row["game_id"], row["away_team_abbr"], row["away_pts"],
-                row["home_team_abbr"], row["home_pts"])
+    logger.info("Slice B — settling slug: %s", slug)
+    result = settle_one(slug)
+    logger.info(
+        "Slice B done: game_id=%s, %s %s @ %s %s, %d player rows "
+        "(games: +%d/~%d, player_box: +%d/~%d)",
+        result["game_id"],
+        result["game_row"]["away_team_abbr"], result["game_row"]["away_pts"],
+        result["game_row"]["home_team_abbr"], result["game_row"]["home_pts"],
+        result["player_count"],
+        result["games_inserted"], result["games_updated"],
+        result["player_box_inserted"], result["player_box_updated"],
+    )
 
 
 if __name__ == "__main__":

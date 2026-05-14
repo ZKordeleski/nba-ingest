@@ -103,6 +103,46 @@ The job → MERGE → FLAT pattern is now de-risked. Slices B-F can copy this st
 
 ---
 
+## Update: Slice B complete (2026-05-14, evening cont.)
+
+**Player_box_basic now writes alongside games.** Same game `202404090MEM` produces 1 game row + 24 player rows in a single `settle_one()` call, fully idempotent.
+
+### What landed in Slice B
+
+1. **`PLAYER_BOX_BASIC_MERGE_SQL` in `daily_settle.py`** — MERGE statement keyed on `(game_id, player_name)` since BR player_id isn't extracted yet (decision #3 deferred).
+2. **`_merge_rows()` helper** — generic PUT+MERGE wrapper that takes (rows, sql template, label, slug, tmpdir) and returns (inserted, updated). Both games and player_box use it now.
+3. **Refactored `settle_one()`** — flattens both game-grain and player-grain rows from a single fetched boxscore, MERGEs both atomically (one tmpdir, one connection).
+4. **`STAGE_PATH` simplified** — was `@ZK_NBA.RAW.INGEST_STAGE/flat/games`, now `@ZK_NBA.RAW.INGEST_STAGE/flat`. File label in NDJSON path distinguishes target table (`games_<slug>.ndjson`, `player_box_basic_<slug>.ndjson`).
+5. **Synthetic `player_id` for BR scrapes** — flattener sets `player_id = player_name` for non-null compliance with the DDL. Documented as reversible interim until BR player-slug extraction (decision #3). One new unit test asserts `player_id == player_name` for BR-scraped rows.
+
+### End-to-end validation
+
+| Check | Expected | Got |
+|---|---|---|
+| First run (games) | (1, 0) | (0, 1) — already inserted in Slice A run |
+| First run (player_box_basic) | (24, 0) | **(24, 0)** ✓ |
+| Second run (games) | (0, 1) | (0, 1) ✓ |
+| Second run (player_box_basic) | (0, 24) | **(0, 24)** ✓ — idempotent |
+| Player rows for this game | ~28 | 24 (both teams had 12 dressed) |
+| Total player_box_basic | 1,568,763 + 24 | 1,568,787 ✓ |
+| **Wembanyama** | 18 pts / 7 blk | **18 pts, 7 blk, +15 plus_minus** ✓ |
+| Orphan player_box rows (JOIN to games) | 0 | 0 ✓ |
+| Distinct teams in player_box for game | 2 | 2 (MEM home, SAS away) ✓ |
+| Team-pts sum = `games.home_pts` | 87 | 87 ✓ |
+| Team-pts sum = `games.away_pts` | 102 | 102 ✓ |
+
+### Notable real-data confirmations
+
+- Jordan Goodwin's 19-rebound line for MEM (10 pts / 19 reb / 0 blk / 36 min) — matches earlier validation review note.
+- SAS team blocks total of 11 (validated in Slice A) decomposed as: Wembanyama 7, Mamukelashvili 1, plus 3 elsewhere on the SAS roster.
+- Top 10 scorers all known NBA players from that 2024 season (no name-parsing failures).
+
+### Tests
+
+32 unit tests pass (one new: `test_flatten_player_box_basic_player_id_is_synthetic_name`). Player-id synthesis behavior is now locked into the test suite so future refactors can't silently revert.
+
+---
+
 ## Honest assessment: salvage, don't restart
 
 **The repo is ~70% solid and ~30% needs rewrite.** The foundation layers (SQL, fetchers, flatteners, client, tests) have been validated against real Snowflake and real BR data. The job layer (orchestration glue) is broken in ways that require a clean rewrite — but throwing out the validated foundation to start over would lose real work to avoid the messy 30% that needs rewrite anyway.

@@ -217,6 +217,22 @@ def test_flatten_player_box_basic_is_home_flag():
     assert all(r["is_home"] is False for r in away_rows)
 
 
+def test_flatten_player_box_basic_player_id_is_synthetic_name():
+    """Interim: player_id is set to player_name (NOT NULL constraint).
+
+    The DDL requires player_id NOT NULL. BR scrapes don't yet extract real
+    player_ids; until decision #3 lands, we use player_name as a synthetic
+    stable ID. Verifies player_id == player_name for every row.
+    """
+    df = _sample_basic_df()
+    rows = flatten_player_box_basic("20230612ODAL", "DEN", df, is_home=True)
+    assert len(rows) == 2
+    for r in rows:
+        assert r["player_id"] == r["player_name"], \
+            f"player_id should equal player_name for BR-scraped row (interim): {r}"
+        assert r["player_id"] is not None, "player_id must be non-null (DDL constraint)"
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Tests: flatten_line_score
 # ──────────────────────────────────────────────────────────────────────────────
