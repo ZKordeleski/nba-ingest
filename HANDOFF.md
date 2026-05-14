@@ -143,6 +143,44 @@ The job → MERGE → FLAT pattern is now de-risked. Slices B-F can copy this st
 
 ---
 
+## Update: Slice C complete (2026-05-14, evening cont.)
+
+**Three tables now write atomically per `settle_one()` call: `games` + `player_box_basic` + `line_scores`.** Same game `202404090MEM`, all idempotent.
+
+### What landed in Slice C
+
+1. **`LINE_SCORES_MERGE_SQL` in `daily_settle.py`** — MERGE keyed on `game_id` (single row per game). Updates all quarter/OT columns + totals on re-run.
+2. **`flatten_line_score` wired into `settle_one()`** — reads the hidden `line_score` comment table from the boxscore fetch, returns a single dict (or None if missing), passed through the same `_merge_rows()` helper. No new flattener code required.
+
+### End-to-end validation
+
+| Check | Expected | Got |
+|---|---|---|
+| First run (line_scores) | (1, 0) | **(1, 0)** ✓ |
+| Second run (line_scores) | (0, 1) | **(0, 1)** ✓ idempotent |
+| Total line_scores | 58,053 + 1 | 58,054 ✓ |
+| BR-scrape line_scores | 1 | 1 ✓ |
+| Quarter sums = home_pts | 25+24+12+26 = 87 | **87 ✓** |
+| Quarter sums = away_pts | 16+32+29+25 = 102 | **102 ✓** |
+| OT columns | NULL (regulation game) | NULL ✓ |
+| line_scores.home_pts = games.home_pts | TRUE | TRUE ✓ |
+| line_scores.away_pts = games.away_pts | TRUE | TRUE ✓ |
+
+### Triple-source reconciliation
+
+**Three independent parsings of the BR page produce identical team totals:**
+- Team Totals row of basic box (Slice A → `games`)
+- Sum of 24 player rows (Slice B → `player_box_basic`)
+- Hidden `line_score` comment table (Slice C → `line_scores`)
+
+All three say MEM=87, SAS=102. If any parsing was broken we'd see disagreement; the agreement is strong evidence the pipeline is correct.
+
+### Narrative readable from the data
+
+The line score reveals SAS's run: 16 Q1 (down 9), then 32-24 in Q2, then 29-12 in Q3 — outscored MEM by 25 in the middle quarters, never looked back. This is the kind of contextual story the friend can now query for any of the 2024-25 games we backfill.
+
+---
+
 ## Honest assessment: salvage, don't restart
 
 **The repo is ~70% solid and ~30% needs rewrite.** The foundation layers (SQL, fetchers, flatteners, client, tests) have been validated against real Snowflake and real BR data. The job layer (orchestration glue) is broken in ways that require a clean rewrite — but throwing out the validated foundation to start over would lose real work to avoid the messy 30% that needs rewrite anyway.

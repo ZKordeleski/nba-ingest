@@ -39,6 +39,7 @@ from nba_ingest import snowflake_client
 from nba_ingest.fetchers.boxscore import fetch_boxscore
 from nba_ingest.flatteners.boxscore import (
     flatten_game_row,
+    flatten_line_score,
     flatten_player_box_basic,
 )
 
@@ -243,6 +244,70 @@ WHEN NOT MATCHED THEN INSERT (
 """
 
 
+LINE_SCORES_MERGE_SQL = """
+MERGE INTO ZK_NBA.FLAT.line_scores AS target
+USING (
+    SELECT
+        $1:game_id::STRING              AS game_id,
+        $1:game_date::DATE              AS game_date,
+        $1:home_team_abbr::STRING       AS home_team_abbr,
+        $1:home_q1::INT                 AS home_q1,
+        $1:home_q2::INT                 AS home_q2,
+        $1:home_q3::INT                 AS home_q3,
+        $1:home_q4::INT                 AS home_q4,
+        $1:home_ot1::INT                AS home_ot1,
+        $1:home_ot2::INT                AS home_ot2,
+        $1:home_ot3::INT                AS home_ot3,
+        $1:home_ot4::INT                AS home_ot4,
+        $1:home_pts::INT                AS home_pts,
+        $1:away_team_abbr::STRING       AS away_team_abbr,
+        $1:away_q1::INT                 AS away_q1,
+        $1:away_q2::INT                 AS away_q2,
+        $1:away_q3::INT                 AS away_q3,
+        $1:away_q4::INT                 AS away_q4,
+        $1:away_ot1::INT                AS away_ot1,
+        $1:away_ot2::INT                AS away_ot2,
+        $1:away_ot3::INT                AS away_ot3,
+        $1:away_ot4::INT                AS away_ot4,
+        $1:away_pts::INT                AS away_pts,
+        $1:source::STRING               AS source,
+        $1:fetched_at::TIMESTAMP_NTZ    AS fetched_at
+    FROM {stage_file}
+    (FILE_FORMAT => 'ZK_NBA.RAW.JSON_FF')
+) AS src
+ON target.game_id = src.game_id
+WHEN MATCHED THEN UPDATE SET
+    game_date = src.game_date,
+    home_team_abbr = src.home_team_abbr,
+    home_q1 = src.home_q1, home_q2 = src.home_q2, home_q3 = src.home_q3, home_q4 = src.home_q4,
+    home_ot1 = src.home_ot1, home_ot2 = src.home_ot2, home_ot3 = src.home_ot3, home_ot4 = src.home_ot4,
+    home_pts = src.home_pts,
+    away_team_abbr = src.away_team_abbr,
+    away_q1 = src.away_q1, away_q2 = src.away_q2, away_q3 = src.away_q3, away_q4 = src.away_q4,
+    away_ot1 = src.away_ot1, away_ot2 = src.away_ot2, away_ot3 = src.away_ot3, away_ot4 = src.away_ot4,
+    away_pts = src.away_pts,
+    source = src.source,
+    fetched_at = src.fetched_at
+WHEN NOT MATCHED THEN INSERT (
+    game_id, game_date, home_team_abbr,
+    home_q1, home_q2, home_q3, home_q4,
+    home_ot1, home_ot2, home_ot3, home_ot4, home_pts,
+    away_team_abbr,
+    away_q1, away_q2, away_q3, away_q4,
+    away_ot1, away_ot2, away_ot3, away_ot4, away_pts,
+    source, fetched_at
+) VALUES (
+    src.game_id, src.game_date, src.home_team_abbr,
+    src.home_q1, src.home_q2, src.home_q3, src.home_q4,
+    src.home_ot1, src.home_ot2, src.home_ot3, src.home_ot4, src.home_pts,
+    src.away_team_abbr,
+    src.away_q1, src.away_q2, src.away_q3, src.away_q4,
+    src.away_ot1, src.away_ot2, src.away_ot3, src.away_ot4, src.away_pts,
+    src.source, src.fetched_at
+)
+"""
+
+
 def _write_ndjson(records: list[dict], path: Path) -> None:
     with path.open("w") as f:
         for record in records:
@@ -316,10 +381,14 @@ def settle_one(slug: str) -> dict:
         + flatten_player_box_basic(slug, away_team, away_df, is_home=False)
     )
 
+    line_row = flatten_line_score(slug, box.get("line_score"))
+    line_rows = [line_row] if line_row else []
+
     logger.info(
-        "Flattened: 1 game row (%s %s @ %s %s, %s) + %d player rows",
+        "Flattened: 1 game + %d players + %d line_score (%s %s @ %s %s, %s)",
+        len(player_rows), len(line_rows),
         away_team, game_row["away_pts"], home_team, game_row["home_pts"],
-        game_row["game_date"], len(player_rows),
+        game_row["game_date"],
     )
 
     conn = snowflake_client.connect()
@@ -333,6 +402,10 @@ def settle_one(slug: str) -> dict:
                 conn, player_rows, PLAYER_BOX_BASIC_MERGE_SQL,
                 "player_box_basic", slug, tmp,
             )
+            line_inserted, line_updated = _merge_rows(
+                conn, line_rows, LINE_SCORES_MERGE_SQL,
+                "line_scores", slug, tmp,
+            )
     finally:
         conn.close()
 
@@ -340,26 +413,29 @@ def settle_one(slug: str) -> dict:
         "game_id": slug,
         "game_row": game_row,
         "player_count": len(player_rows),
+        "line_score_count": len(line_rows),
         "games_inserted": games_inserted,
         "games_updated": games_updated,
         "player_box_inserted": box_inserted,
         "player_box_updated": box_updated,
+        "line_scores_inserted": line_inserted,
+        "line_scores_updated": line_updated,
     }
 
 
 def main() -> None:
     slug = os.environ.get("SETTLE_SLUG", "").strip() or DEFAULT_SLUG
-    logger.info("Slice B — settling slug: %s", slug)
+    logger.info("Slice C — settling slug: %s", slug)
     result = settle_one(slug)
     logger.info(
-        "Slice B done: game_id=%s, %s %s @ %s %s, %d player rows "
-        "(games: +%d/~%d, player_box: +%d/~%d)",
+        "Slice C done: game_id=%s, %s %s @ %s %s — games (+%d/~%d), "
+        "player_box (+%d/~%d), line_scores (+%d/~%d)",
         result["game_id"],
         result["game_row"]["away_team_abbr"], result["game_row"]["away_pts"],
         result["game_row"]["home_team_abbr"], result["game_row"]["home_pts"],
-        result["player_count"],
         result["games_inserted"], result["games_updated"],
         result["player_box_inserted"], result["player_box_updated"],
+        result["line_scores_inserted"], result["line_scores_updated"],
     )
 
 
