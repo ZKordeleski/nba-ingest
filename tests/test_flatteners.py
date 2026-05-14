@@ -94,13 +94,19 @@ def test_parse_minutes_none():
 
 
 def test_flatten_columns_multiindex():
-    """Multi-level column headers from pd.read_html are flattened correctly."""
+    """Multi-level column headers are flattened to short names (last tuple element).
+
+    The original buggy behaviour joined ALL levels ('Basic Box Score Stats_MP')
+    which broke every stat lookup since the code uses short names ('MP').
+    Correct: take only the last element.
+    """
     tuples = [("Basic Box Score Stats", "MP"), ("Basic Box Score Stats", "PTS")]
     multi = pd.MultiIndex.from_tuples(tuples)
     df = pd.DataFrame([[1, 2]], columns=multi)
     flat = _flatten_columns(df)
-    assert "Basic Box Score Stats_MP" in flat.columns
-    assert "Basic Box Score Stats_PTS" in flat.columns
+    assert "MP" in flat.columns, "Expected short name 'MP', not full path"
+    assert "PTS" in flat.columns, "Expected short name 'PTS', not full path"
+    assert "Basic Box Score Stats_MP" not in flat.columns, "Old broken prefix must be gone"
 
 
 def test_flatten_columns_single_level():
