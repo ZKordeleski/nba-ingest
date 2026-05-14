@@ -322,3 +322,138 @@ def flatten_game_meta(game_slug: str, meta: dict) -> dict:
         "attendance": meta.get("attendance"),
         "fetched_at": _now_utc(),
     }
+
+
+def _extract_team_totals(df: pd.DataFrame) -> Optional[pd.Series]:
+    """Return the 'Team Totals' row from a basic box DataFrame, or None.
+
+    The Team Totals row contains team-level FG/FGA/3P/3PA/FT/FTA/REB/AST/STL/
+    BLK/TOV/PF/PTS. _drop_totals_row removes this for player-grain flatteners;
+    the game-grain flattener needs it instead.
+    """
+    if df is None or df.empty:
+        return None
+    df = _flatten_columns(df.copy())
+    player_col = df.columns[0] if "Player" not in df.columns else "Player"
+    mask = df[player_col].astype(str).str.contains("Team Totals", na=False)
+    matches = df[mask]
+    if matches.empty:
+        return None
+    return matches.iloc[0]
+
+
+def _season_from_slug(game_slug: str) -> int:
+    """Derive NBA season end-year from a slug's date.
+
+    NBA seasons span Oct-Jun: Oct/Nov/Dec games of year Y are part of the
+    Y+1 season; Jan-Jun games of year Y are part of the Y season.
+    """
+    year = int(game_slug[:4])
+    month = int(game_slug[4:6])
+    return year + 1 if month >= 10 else year
+
+
+def flatten_game_row(
+    game_slug: str,
+    home_team: str,
+    away_team: str,
+    home_basic_df: pd.DataFrame,
+    away_basic_df: pd.DataFrame,
+    line_score_df: Optional[pd.DataFrame] = None,
+) -> Optional[dict]:
+    """Flatten a single game's team-level row for FLAT.games.
+
+    Sources team stats from the "Team Totals" row of each team's basic box.
+    If line_score is provided, prefers its total-points value over the basic
+    box totals (they should match; line_score is more authoritative for the
+    home/away score since it labels them explicitly).
+
+    Args:
+        game_slug: BR game slug (e.g., "20240409OMEM"). Used as game_id.
+        home_team: Home team 3-letter abbr (from slug or table IDs).
+        away_team: Away team 3-letter abbr (from table IDs).
+        home_basic_df: Raw home team basic box DataFrame.
+        away_basic_df: Raw away team basic box DataFrame.
+        line_score_df: Optional hidden line_score DataFrame for score sanity.
+
+    Returns:
+        A single dict matching FLAT.games columns, or None if both totals rows
+        are missing.
+    """
+    home_totals = _extract_team_totals(home_basic_df)
+    away_totals = _extract_team_totals(away_basic_df)
+    if home_totals is None or away_totals is None:
+        logger.warning(
+            "Missing team totals for %s (home=%s, away=%s)",
+            game_slug, home_totals is not None, away_totals is not None,
+        )
+        return None
+
+    game_date = f"{game_slug[:4]}-{game_slug[4:6]}-{game_slug[6:8]}"
+
+    home_pts = _safe_int(home_totals.get("PTS"))
+    away_pts = _safe_int(away_totals.get("PTS"))
+
+    # Cross-check against line_score totals when available.
+    if line_score_df is not None and not line_score_df.empty and len(line_score_df) >= 2:
+        ls_flat = _flatten_columns(line_score_df.copy())
+        # Row 0 = away, row 1 = home (BR convention).
+        ls_home_t = _safe_int(ls_flat.iloc[1].get("T"))
+        ls_away_t = _safe_int(ls_flat.iloc[0].get("T"))
+        if ls_home_t is not None and home_pts is not None and ls_home_t != home_pts:
+            logger.warning(
+                "%s: home_pts disagree (line_score=%s, basic_totals=%s)",
+                game_slug, ls_home_t, home_pts,
+            )
+        if ls_away_t is not None and away_pts is not None and ls_away_t != away_pts:
+            logger.warning(
+                "%s: away_pts disagree (line_score=%s, basic_totals=%s)",
+                game_slug, ls_away_t, away_pts,
+            )
+
+    home_wl = (
+        "W" if home_pts is not None and away_pts is not None and home_pts > away_pts
+        else ("L" if home_pts is not None and away_pts is not None and home_pts < away_pts else None)
+    )
+
+    def _team_dict(prefix: str, totals: pd.Series) -> dict:
+        return {
+            f"{prefix}_fgm": _safe_int(totals.get("FG")),
+            f"{prefix}_fga": _safe_int(totals.get("FGA")),
+            f"{prefix}_fg_pct": _safe_float(totals.get("FG%")),
+            f"{prefix}_fg3m": _safe_int(totals.get("3P")),
+            f"{prefix}_fg3a": _safe_int(totals.get("3PA")),
+            f"{prefix}_fg3_pct": _safe_float(totals.get("3P%")),
+            f"{prefix}_ftm": _safe_int(totals.get("FT")),
+            f"{prefix}_fta": _safe_int(totals.get("FTA")),
+            f"{prefix}_ft_pct": _safe_float(totals.get("FT%")),
+            f"{prefix}_oreb": _safe_int(totals.get("ORB")),
+            f"{prefix}_dreb": _safe_int(totals.get("DRB")),
+            f"{prefix}_reb": _safe_int(totals.get("TRB")),
+            f"{prefix}_ast": _safe_int(totals.get("AST")),
+            f"{prefix}_stl": _safe_int(totals.get("STL")),
+            f"{prefix}_blk": _safe_int(totals.get("BLK")),
+            f"{prefix}_tov": _safe_int(totals.get("TOV")),
+            f"{prefix}_pf": _safe_int(totals.get("PF")),
+            f"{prefix}_plus_minus": None,  # always 0 in totals row; leave NULL
+        }
+
+    row = {
+        "game_id": game_slug,
+        "game_date": game_date,
+        "season": _season_from_slug(game_slug),
+        "season_id": None,        # NBA Stats API format; not derivable from BR alone
+        "season_type": None,      # Slice G can fill from schedule page
+        "home_team_id": None,     # NBA Stats API team ID; not on BR
+        "home_team_abbr": home_team,
+        "away_team_id": None,
+        "away_team_abbr": away_team,
+        "home_pts": home_pts,
+        "away_pts": away_pts,
+        "home_wl": home_wl,
+        "source": "br_scrape",
+        "fetched_at": _now_utc(),
+    }
+    row.update(_team_dict("home", home_totals))
+    row.update(_team_dict("away", away_totals))
+    return row

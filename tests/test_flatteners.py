@@ -16,12 +16,14 @@ import pandas as pd
 import pytest
 
 from nba_ingest.flatteners.boxscore import (
+    flatten_game_row,
     flatten_line_score,
     flatten_player_box_advanced,
     flatten_player_box_basic,
     _drop_totals_row,
     _flatten_columns,
     _parse_minutes,
+    _season_from_slug,
 )
 from nba_ingest.flatteners.draft import flatten_draft_career_stats
 
@@ -291,6 +293,109 @@ def test_flatten_draft_career_stats_basic():
     assert rows[0]["season"] == 2023
     assert rows[0]["overall_pick"] == 1
     assert rows[1]["overall_pick"] == 2
+
+
+def _team_totals_df(team_label: str, **stats) -> pd.DataFrame:
+    """Build a basic-box DataFrame containing one player row + Team Totals row."""
+    row_player = {"Player": "Some Player", "MP": "32:00", "PTS": 0, "AST": 0, "TRB": 0,
+                  "ORB": 0, "DRB": 0, "STL": 0, "BLK": 0, "TOV": 0, "PF": 0,
+                  "FG": 0, "FGA": 0, "FG%": 0.0, "3P": 0, "3PA": 0, "3P%": 0.0,
+                  "FT": 0, "FTA": 0, "FT%": 0.0, "+/-": 0}
+    row_totals = {"Player": "Team Totals", "MP": "240:00", **stats}
+    return pd.DataFrame([row_player, row_totals])
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Tests: _season_from_slug
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def test_season_from_slug_fall_game():
+    """Nov 15, 2023 is part of the 2023-24 season (end year = 2024)."""
+    assert _season_from_slug("202311150LAL") == 2024
+
+
+def test_season_from_slug_spring_game():
+    """Apr 9, 2024 is part of the 2023-24 season (end year = 2024)."""
+    assert _season_from_slug("202404090MEM") == 2024
+
+
+def test_season_from_slug_june_finals():
+    """June games are still part of the season ending that calendar year."""
+    assert _season_from_slug("202306120DEN") == 2023
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Tests: flatten_game_row (Slice A core)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def test_flatten_game_row_basic_identity():
+    """Returns one row with game_id, date, season, team abbrs, scores."""
+    home_df = _team_totals_df("MEM", PTS=87, FG=36, FGA=104, **{"FG%": 0.346},
+                              **{"3P": 6, "3PA": 30, "3P%": 0.200},
+                              FT=9, FTA=11, **{"FT%": 0.818},
+                              ORB=17, DRB=32, TRB=49, AST=21, STL=10, BLK=5, TOV=8, PF=13)
+    away_df = _team_totals_df("SAS", PTS=102, FG=42, FGA=87, **{"FG%": 0.483},
+                              **{"3P": 10, "3PA": 40, "3P%": 0.250},
+                              FT=8, FTA=8, **{"FT%": 1.000},
+                              ORB=10, DRB=41, TRB=51, AST=30, STL=5, BLK=11, TOV=17, PF=12)
+    row = flatten_game_row(
+        game_slug="202404090MEM",
+        home_team="MEM",
+        away_team="SAS",
+        home_basic_df=home_df,
+        away_basic_df=away_df,
+    )
+    assert row is not None
+    assert row["game_id"] == "202404090MEM"
+    assert row["game_date"] == "2024-04-09"
+    assert row["season"] == 2024
+    assert row["home_team_abbr"] == "MEM"
+    assert row["away_team_abbr"] == "SAS"
+    assert row["home_pts"] == 87
+    assert row["away_pts"] == 102
+
+
+def test_flatten_game_row_home_wl_loss():
+    """home_wl is 'L' when home_pts < away_pts."""
+    home_df = _team_totals_df("MEM", PTS=87, FG=36, FGA=104)
+    away_df = _team_totals_df("SAS", PTS=102, FG=42, FGA=87)
+    row = flatten_game_row("202404090MEM", "MEM", "SAS", home_df, away_df)
+    assert row["home_wl"] == "L"
+
+
+def test_flatten_game_row_home_wl_win():
+    """home_wl is 'W' when home_pts > away_pts."""
+    home_df = _team_totals_df("MEM", PTS=110, FG=40, FGA=80)
+    away_df = _team_totals_df("SAS", PTS=95, FG=35, FGA=85)
+    row = flatten_game_row("202404090MEM", "MEM", "SAS", home_df, away_df)
+    assert row["home_wl"] == "W"
+
+
+def test_flatten_game_row_source_and_team_stats():
+    """source='br_scrape' and team stat columns populated from totals row."""
+    home_df = _team_totals_df("MEM", PTS=87, FG=36, FGA=104, **{"FG%": 0.346},
+                              **{"3P": 6, "3PA": 30}, FT=9, FTA=11,
+                              ORB=17, DRB=32, TRB=49, AST=21, STL=10, BLK=5, TOV=8, PF=13)
+    away_df = _team_totals_df("SAS", PTS=102, FG=42, FGA=87,
+                              **{"3P": 10, "3PA": 40}, AST=30, BLK=11)
+    row = flatten_game_row("202404090MEM", "MEM", "SAS", home_df, away_df)
+    assert row["source"] == "br_scrape"
+    assert row["home_fgm"] == 36
+    assert row["home_fga"] == 104
+    assert row["home_ast"] == 21
+    assert row["away_fg3a"] == 40
+    assert row["away_blk"] == 11
+
+
+def test_flatten_game_row_returns_none_when_totals_missing():
+    """No Team Totals row in the DF means we can't form a games row — return None."""
+    # Build a DF with only a player row, no Team Totals
+    no_totals_df = pd.DataFrame([{"Player": "Player A", "PTS": 28, "FG": 10, "FGA": 20}])
+    home_df_ok = _team_totals_df("MEM", PTS=87, FG=36, FGA=104)
+    result = flatten_game_row("202404090MEM", "MEM", "SAS", no_totals_df, home_df_ok)
+    assert result is None
 
 
 def test_flatten_draft_career_stats_nulls_for_no_stats():

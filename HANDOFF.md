@@ -66,6 +66,43 @@ NBA's canonical 8-char numeric format: `[type][YY][seq]` where type=2 (regular s
 
 ---
 
+## Update: Slice A complete (2026-05-14, evening cont.)
+
+**The game → Snowflake pipe is proven end-to-end and idempotent.** A single BR-scraped game now lives in `FLAT.games` alongside the 65,642 JB-seeded rows.
+
+### What landed in Slice A
+
+1. **`flatten_game_row` in `flatteners/boxscore.py`** — derives one wide team-level row from the home/away "Team Totals" rows of the basic box. Adds `_extract_team_totals` helper and `_season_from_slug` (NBA season = end year, derived from slug date).
+2. **`daily_settle.py` rewritten as Slice A only** — fetch one slug → flatten → MERGE into `FLAT.games`. Default slug `202404090MEM` (SAS @ MEM, Apr 9 2024). Override via `SETTLE_SLUG` env var. Loads `.env` with `override=False` so CI-injected vars win in production.
+3. **`sql/010_stage.sql` adds `ZK_NBA.RAW.JSON_FF`** — reusable named JSON file format. Required because `SELECT FROM @stage` rejects inline `FILE_FORMAT => (TYPE = 'JSON')`; only named refs are accepted.
+4. **8 new unit tests** for `_season_from_slug` (3 cases) and `flatten_game_row` (5 cases). All 30 tests pass.
+
+### End-to-end validation
+
+- **First run**: `MERGE result: [(1, 0)]` — 1 inserted, 0 updated.
+- **Second run** (same slug, idempotency): `MERGE result: [(0, 1)]` — 0 inserted, 1 updated. Row count stays at 1 for the game_id. Total `FLAT.games` count: 65,643 (one new). `fetched_at` advances between runs.
+- **Row contents verified against BR ground truth**:
+  - game_id=`202404090MEM`, game_date=`2024-04-09`, season=2024
+  - home=MEM 87 (L), away=SAS 102 (W), source=`br_scrape`
+  - Stats present: home 36-104 FG, 6-30 3PT, 49 reb, 21 ast / away 42-87 FG, 10-40 3PT, 51 reb, 30 ast, 11 blk (Wembanyama on SAS roster — block count tracks)
+
+### Slug format clarification
+
+HANDOFF earlier listed `20240409OMEM` (12 chars with letter `O`). The **real BR slug** is `202404090MEM` — `YYYYMMDD + "0" (digit zero) + HOME` = 12 characters. Updated `DEFAULT_SLUG` and tests to use the correct format. JB game_ids stay 8-char numeric; BR slugs are 12-char — the two are unambiguously distinguishable by length.
+
+### What is NOT in Slice A yet (correctly deferred to later slices)
+
+- `season_id`, `season_type`, `home_team_id`, `away_team_id`, `home_plus_minus`, `away_plus_minus` — left NULL. The first three need an NBA Stats API lookup or schedule-page parse (Slice G). Plus_minus at team level is always 0 in BR's totals row; leaving NULL preserves the "we don't have this" signal.
+- Player box, line scores, advanced stats — Slice B-D scope.
+- Officials, inactives — Slice E-F scope (depend on architectural decision #2).
+- Multi-game daily loop — Slice G scope.
+
+### Why this matters
+
+The job → MERGE → FLAT pattern is now de-risked. Slices B-F can copy this structure: build a new flattener, add a MERGE block, validate one game at a time. The architectural questions about game_id collisions can be deferred — JB's 8-char IDs and BR's 12-char slugs coexist cleanly today.
+
+---
+
 ## Honest assessment: salvage, don't restart
 
 **The repo is ~70% solid and ~30% needs rewrite.** The foundation layers (SQL, fetchers, flatteners, client, tests) have been validated against real Snowflake and real BR data. The job layer (orchestration glue) is broken in ways that require a clean rewrite — but throwing out the validated foundation to start over would lose real work to avoid the messy 30% that needs rewrite anyway.

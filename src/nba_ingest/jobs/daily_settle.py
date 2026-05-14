@@ -1,13 +1,23 @@
-"""Daily settle job: ingest all games from the previous calendar day.
+"""Slice A: settle one game into FLAT.games.
 
-Triggered by GitHub Actions cron (8:30 UTC = ~3:30am ET — all games are final
-by then including late West Coast games).
+This is the minimal end-to-end pipeline: fetch a BR boxscore by slug, flatten
+to a single FLAT.games row, MERGE into Snowflake. It proves the game→Snowflake
+pipe before later slices add player_box, line_scores, etc.
 
-Supports manual override via SETTLE_DATE env var for backfill or debugging:
-    SETTLE_DATE=2024-01-15 python -m nba_ingest.jobs.daily_settle
+Usage:
+    # Slice A test (default known-good slug):
+    python -m nba_ingest.jobs.daily_settle
 
-Exits cleanly with code 0 if there are no games on the target date (off-day,
-off-season). No Snowflake writes happen in that case.
+    # Specify a different slug:
+    SETTLE_SLUG=20240409OMEM python -m nba_ingest.jobs.daily_settle
+
+The MERGE is idempotent on game_id. Re-running on the same slug updates the
+existing row in place (fetched_at advances, stat columns reflect the latest
+fetch) — no duplicate row, no second insert.
+
+Future slices (B-F) will extend this to player_box_basic, line_scores,
+player_box_advanced, game_officials, game_inactives. Slice G adds the
+multi-game daily loop. Until those slices land, this file does ONE thing well.
 """
 
 from __future__ import annotations
@@ -17,18 +27,17 @@ import logging
 import os
 import sys
 import tempfile
-from datetime import date, datetime, timedelta
 from pathlib import Path
+
+from dotenv import load_dotenv
+
+# Load .env for local CLI runs. override=False keeps CI-injected env vars
+# (e.g. from GitHub Actions secrets) authoritative.
+load_dotenv(Path(__file__).resolve().parents[3] / ".env", override=False)
 
 from nba_ingest import snowflake_client
 from nba_ingest.fetchers.boxscore import fetch_boxscore
-from nba_ingest.fetchers.games import list_games_on_date
-from nba_ingest.flatteners.boxscore import (
-    flatten_game_meta,
-    flatten_line_score,
-    flatten_player_box_advanced,
-    flatten_player_box_basic,
-)
+from nba_ingest.flatteners.boxscore import flatten_game_row
 
 logging.basicConfig(
     level=logging.INFO,
@@ -36,164 +45,184 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Slice A test slug: 2024 Apr 9, SAS @ MEM, MEM 102-87. Known-good per HANDOFF.
+# BR slug format: YYYYMMDD + "0" (digit separator) + HOME team (3 chars).
+DEFAULT_SLUG = "202404090MEM"
 
-def _settle_date() -> date:
-    """Return the date to settle. Env var overrides yesterday."""
-    env_date = os.environ.get("SETTLE_DATE", "").strip()
-    if env_date:
-        return datetime.strptime(env_date, "%Y-%m-%d").date()
-    return date.today() - timedelta(days=1)
+STAGE_PATH = "@ZK_NBA.RAW.INGEST_STAGE/flat/games"
+
+GAMES_MERGE_SQL = f"""
+MERGE INTO ZK_NBA.FLAT.games AS target
+USING (
+    SELECT
+        $1:game_id::STRING            AS game_id,
+        $1:game_date::DATE            AS game_date,
+        $1:season::INT                AS season,
+        $1:season_id::INT             AS season_id,
+        $1:season_type::STRING        AS season_type,
+        $1:home_team_id::INT          AS home_team_id,
+        $1:home_team_abbr::STRING     AS home_team_abbr,
+        $1:away_team_id::INT          AS away_team_id,
+        $1:away_team_abbr::STRING     AS away_team_abbr,
+        $1:home_pts::INT              AS home_pts,
+        $1:away_pts::INT              AS away_pts,
+        $1:home_wl::STRING            AS home_wl,
+        $1:home_fgm::INT              AS home_fgm,
+        $1:home_fga::INT              AS home_fga,
+        $1:home_fg_pct::FLOAT         AS home_fg_pct,
+        $1:home_fg3m::INT             AS home_fg3m,
+        $1:home_fg3a::INT             AS home_fg3a,
+        $1:home_fg3_pct::FLOAT        AS home_fg3_pct,
+        $1:home_ftm::INT              AS home_ftm,
+        $1:home_fta::INT              AS home_fta,
+        $1:home_ft_pct::FLOAT         AS home_ft_pct,
+        $1:home_oreb::INT             AS home_oreb,
+        $1:home_dreb::INT             AS home_dreb,
+        $1:home_reb::INT              AS home_reb,
+        $1:home_ast::INT              AS home_ast,
+        $1:home_stl::INT              AS home_stl,
+        $1:home_blk::INT              AS home_blk,
+        $1:home_tov::INT              AS home_tov,
+        $1:home_pf::INT               AS home_pf,
+        $1:home_plus_minus::INT       AS home_plus_minus,
+        $1:away_fgm::INT              AS away_fgm,
+        $1:away_fga::INT              AS away_fga,
+        $1:away_fg_pct::FLOAT         AS away_fg_pct,
+        $1:away_fg3m::INT             AS away_fg3m,
+        $1:away_fg3a::INT             AS away_fg3a,
+        $1:away_fg3_pct::FLOAT        AS away_fg3_pct,
+        $1:away_ftm::INT              AS away_ftm,
+        $1:away_fta::INT              AS away_fta,
+        $1:away_ft_pct::FLOAT         AS away_ft_pct,
+        $1:away_oreb::INT             AS away_oreb,
+        $1:away_dreb::INT             AS away_dreb,
+        $1:away_reb::INT              AS away_reb,
+        $1:away_ast::INT              AS away_ast,
+        $1:away_stl::INT              AS away_stl,
+        $1:away_blk::INT              AS away_blk,
+        $1:away_tov::INT              AS away_tov,
+        $1:away_pf::INT               AS away_pf,
+        $1:away_plus_minus::INT       AS away_plus_minus,
+        $1:source::STRING             AS source,
+        $1:fetched_at::TIMESTAMP_NTZ  AS fetched_at
+    FROM {{stage_file}}
+    (FILE_FORMAT => 'ZK_NBA.RAW.JSON_FF')
+) AS src
+ON target.game_id = src.game_id
+WHEN MATCHED THEN UPDATE SET
+    game_date = src.game_date,
+    season = src.season,
+    season_id = src.season_id,
+    season_type = src.season_type,
+    home_team_id = src.home_team_id,
+    home_team_abbr = src.home_team_abbr,
+    away_team_id = src.away_team_id,
+    away_team_abbr = src.away_team_abbr,
+    home_pts = src.home_pts,
+    away_pts = src.away_pts,
+    home_wl = src.home_wl,
+    home_fgm = src.home_fgm, home_fga = src.home_fga, home_fg_pct = src.home_fg_pct,
+    home_fg3m = src.home_fg3m, home_fg3a = src.home_fg3a, home_fg3_pct = src.home_fg3_pct,
+    home_ftm = src.home_ftm, home_fta = src.home_fta, home_ft_pct = src.home_ft_pct,
+    home_oreb = src.home_oreb, home_dreb = src.home_dreb, home_reb = src.home_reb,
+    home_ast = src.home_ast, home_stl = src.home_stl, home_blk = src.home_blk,
+    home_tov = src.home_tov, home_pf = src.home_pf, home_plus_minus = src.home_plus_minus,
+    away_fgm = src.away_fgm, away_fga = src.away_fga, away_fg_pct = src.away_fg_pct,
+    away_fg3m = src.away_fg3m, away_fg3a = src.away_fg3a, away_fg3_pct = src.away_fg3_pct,
+    away_ftm = src.away_ftm, away_fta = src.away_fta, away_ft_pct = src.away_ft_pct,
+    away_oreb = src.away_oreb, away_dreb = src.away_dreb, away_reb = src.away_reb,
+    away_ast = src.away_ast, away_stl = src.away_stl, away_blk = src.away_blk,
+    away_tov = src.away_tov, away_pf = src.away_pf, away_plus_minus = src.away_plus_minus,
+    source = src.source,
+    fetched_at = src.fetched_at
+WHEN NOT MATCHED THEN INSERT (
+    game_id, game_date, season, season_id, season_type,
+    home_team_id, home_team_abbr, away_team_id, away_team_abbr,
+    home_pts, away_pts, home_wl,
+    home_fgm, home_fga, home_fg_pct, home_fg3m, home_fg3a, home_fg3_pct,
+    home_ftm, home_fta, home_ft_pct,
+    home_oreb, home_dreb, home_reb, home_ast, home_stl, home_blk,
+    home_tov, home_pf, home_plus_minus,
+    away_fgm, away_fga, away_fg_pct, away_fg3m, away_fg3a, away_fg3_pct,
+    away_ftm, away_fta, away_ft_pct,
+    away_oreb, away_dreb, away_reb, away_ast, away_stl, away_blk,
+    away_tov, away_pf, away_plus_minus,
+    source, fetched_at
+) VALUES (
+    src.game_id, src.game_date, src.season, src.season_id, src.season_type,
+    src.home_team_id, src.home_team_abbr, src.away_team_id, src.away_team_abbr,
+    src.home_pts, src.away_pts, src.home_wl,
+    src.home_fgm, src.home_fga, src.home_fg_pct, src.home_fg3m, src.home_fg3a, src.home_fg3_pct,
+    src.home_ftm, src.home_fta, src.home_ft_pct,
+    src.home_oreb, src.home_dreb, src.home_reb, src.home_ast, src.home_stl, src.home_blk,
+    src.home_tov, src.home_pf, src.home_plus_minus,
+    src.away_fgm, src.away_fga, src.away_fg_pct, src.away_fg3m, src.away_fg3a, src.away_fg3_pct,
+    src.away_ftm, src.away_fta, src.away_ft_pct,
+    src.away_oreb, src.away_dreb, src.away_reb, src.away_ast, src.away_stl, src.away_blk,
+    src.away_tov, src.away_pf, src.away_plus_minus,
+    src.source, src.fetched_at
+)
+"""
 
 
 def _write_ndjson(records: list[dict], path: Path) -> None:
-    """Write a list of dicts to an NDJSON file."""
     with path.open("w") as f:
         for record in records:
-            # datetime objects aren't JSON-serializable by default.
             f.write(json.dumps(record, default=str) + "\n")
 
 
-def _merge_player_box_basic(conn, ndjson_path: Path, stage: str) -> None:
-    """PUT + MERGE player_box_basic rows from an NDJSON file."""
-    merge_sql = f"""
-    MERGE INTO ZK_NBA.FLAT.player_box_basic AS target
-    USING (
-        SELECT
-            $1:game_id::STRING         AS game_id,
-            $1:player_id::STRING       AS player_id,
-            $1:player_name::STRING     AS player_name,
-            $1:team_abbr::STRING       AS team_abbr,
-            $1:game_date::DATE         AS game_date,
-            $1:is_home::BOOLEAN        AS is_home,
-            $1:minutes_played::FLOAT   AS minutes_played,
-            $1:pts::INT                AS pts,
-            $1:ast::INT                AS ast,
-            $1:reb::INT                AS reb,
-            $1:oreb::INT               AS oreb,
-            $1:dreb::INT               AS dreb,
-            $1:stl::INT                AS stl,
-            $1:blk::INT                AS blk,
-            $1:tov::INT                AS tov,
-            $1:pf::INT                 AS pf,
-            $1:fgm::INT                AS fgm,
-            $1:fga::INT                AS fga,
-            $1:fg_pct::FLOAT           AS fg_pct,
-            $1:fg3m::INT               AS fg3m,
-            $1:fg3a::INT               AS fg3a,
-            $1:fg3_pct::FLOAT          AS fg3_pct,
-            $1:ftm::INT                AS ftm,
-            $1:fta::INT                AS fta,
-            $1:ft_pct::FLOAT           AS ft_pct,
-            $1:plus_minus::FLOAT       AS plus_minus,
-            $1:source::STRING          AS source,
-            $1:fetched_at::TIMESTAMP_NTZ AS fetched_at
-        FROM {stage}/{ndjson_path.name}
-        (FILE_FORMAT => (TYPE = 'JSON'))
-    ) AS src
-    ON target.game_id = src.game_id AND target.player_name = src.player_name
-    WHEN MATCHED THEN UPDATE SET
-        player_name = src.player_name,
-        team_abbr = src.team_abbr,
-        minutes_played = src.minutes_played,
-        pts = src.pts,
-        ast = src.ast,
-        reb = src.reb,
-        fetched_at = src.fetched_at
-    WHEN NOT MATCHED THEN INSERT (
-        game_id, player_id, player_name, team_abbr, game_date, is_home,
-        minutes_played, pts, ast, reb, oreb, dreb, stl, blk, tov, pf,
-        fgm, fga, fg_pct, fg3m, fg3a, fg3_pct, ftm, fta, ft_pct,
-        plus_minus, source, fetched_at
-    ) VALUES (
-        src.game_id, src.player_id, src.player_name, src.team_abbr, src.game_date, src.is_home,
-        src.minutes_played, src.pts, src.ast, src.reb, src.oreb, src.dreb, src.stl, src.blk,
-        src.tov, src.pf, src.fgm, src.fga, src.fg_pct, src.fg3m, src.fg3a, src.fg3_pct,
-        src.ftm, src.fta, src.ft_pct, src.plus_minus, src.source, src.fetched_at
+def settle_one(slug: str) -> dict:
+    """Settle a single game by slug. Returns the flattened row written."""
+    logger.info("Fetching boxscore for %s", slug)
+    box = fetch_boxscore(slug)
+
+    home_team = box["home_team"]
+    away_team = box["away_team"]
+    if not home_team or not away_team:
+        raise RuntimeError(f"Could not determine teams for {slug}")
+
+    home_df = box["basic"].get("home")
+    away_df = box["basic"].get("away")
+    if home_df is None or away_df is None:
+        raise RuntimeError(f"Missing basic box DataFrame(s) for {slug}")
+
+    row = flatten_game_row(
+        game_slug=slug,
+        home_team=home_team,
+        away_team=away_team,
+        home_basic_df=home_df,
+        away_basic_df=away_df,
+        line_score_df=box.get("line_score"),
     )
-    """
-    snowflake_client.put_and_merge(conn, ndjson_path, stage, merge_sql)
-
-
-def main() -> None:
-    target_date = _settle_date()
-    logger.info("Settling games for %s", target_date)
-
-    slugs = list_games_on_date(target_date)
-
-    if not slugs:
-        logger.info("No games on %s — exiting cleanly.", target_date)
-        sys.exit(0)
-
-    logger.info("Settling %d game(s) for %s: %s", len(slugs), target_date, slugs)
-
-    all_basic: list[dict] = []
-    all_advanced: list[dict] = []
-    all_line_scores: list[dict] = []
-
-    for slug in slugs:
-        logger.info("Processing %s", slug)
-        try:
-            box = fetch_boxscore(slug)
-        except Exception as e:
-            logger.error("Failed to fetch boxscore for %s: %s", slug, e)
-            continue
-
-        home_team = box["home_team"]
-        away_team = box["away_team"]
-
-        # Basic box scores (home + away).
-        for team, is_home in ((home_team, True), (away_team, False)):
-            if not team:
-                continue
-            df = box["basic"].get("home" if is_home else "away")
-            if df is not None:
-                all_basic.extend(flatten_player_box_basic(slug, team, df, is_home))
-
-        # Advanced box scores (home + away).
-        for team, key in ((home_team, "home"), (away_team, "away")):
-            if not team:
-                continue
-            df = box["advanced"].get(key)
-            if df is not None:
-                all_advanced.extend(flatten_player_box_advanced(slug, team, df))
-
-        # Line score.
-        if box["line_score"] is not None:
-            ls = flatten_line_score(slug, box["line_score"])
-            if ls:
-                all_line_scores.append(ls)
+    if row is None:
+        raise RuntimeError(f"flatten_game_row returned None for {slug}")
 
     logger.info(
-        "Flattened: %d player-game basic rows, %d advanced rows, %d line scores",
-        len(all_basic),
-        len(all_advanced),
-        len(all_line_scores),
+        "Flattened game row: %s %s @ %s %s (%s)",
+        away_team, row["away_pts"], home_team, row["home_pts"], row["game_date"],
     )
-
-    # NOTE: Stage path below assumes an internal stage exists.
-    # For a simple setup without a dedicated stage, use direct INSERT via
-    # snowflake_client.execute() with a VALUES clause for small daily volumes.
-    # Full PUT+MERGE implementation requires creating the stage first.
-    # TODO: Create ZK_NBA.RAW.INGEST_STAGE in a future sql/010_stage.sql file.
-    stage = "@ZK_NBA.RAW.INGEST_STAGE/flat"
 
     conn = snowflake_client.connect()
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
-            tmp = Path(tmpdir)
-
-            if all_basic:
-                basic_file = tmp / f"player_box_basic_{target_date}.ndjson"
-                _write_ndjson(all_basic, basic_file)
-                _merge_player_box_basic(conn, basic_file, stage)
-                logger.info("Merged %d player_box_basic rows", len(all_basic))
-
-            # TODO: add merge for player_box_advanced and line_scores (same pattern)
-
+            tmp_path = Path(tmpdir) / f"games_{slug}.ndjson"
+            _write_ndjson([row], tmp_path)
+            merge_sql = GAMES_MERGE_SQL.replace("{stage_file}", f"{STAGE_PATH}/{tmp_path.name}")
+            result = snowflake_client.put_and_merge(conn, tmp_path, STAGE_PATH, merge_sql)
+            logger.info("MERGE result: %s", result["merge"])
     finally:
         conn.close()
 
-    logger.info("Settle complete for %s", target_date)
+    return row
+
+
+def main() -> None:
+    slug = os.environ.get("SETTLE_SLUG", "").strip() or DEFAULT_SLUG
+    logger.info("Slice A — settling slug: %s", slug)
+    row = settle_one(slug)
+    logger.info("Slice A done: game_id=%s, %s %s @ %s %s",
+                row["game_id"], row["away_team_abbr"], row["away_pts"],
+                row["home_team_abbr"], row["home_pts"])
 
 
 if __name__ == "__main__":
