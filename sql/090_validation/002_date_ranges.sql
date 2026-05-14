@@ -31,7 +31,7 @@ FROM ZK_NBA.FLAT.draft_combine;
 -- Expected: ~2000 to 2022 or similar (combine started ~2000)
 
 -- PBP: modern games only
-SELECT COUNT(DISTINCT game_id) AS game_count,
+SELECT COUNT(DISTINCT pbp.game_id) AS game_count,
        MIN(g.game_date) AS min_date,
        MAX(g.game_date) AS max_date
 FROM ZK_NBA.FLAT.play_by_play pbp

@@ -1,6 +1,68 @@
 # Handoff: State of nba-ingest
 
-Written 2026-05-14 after extensive validation and review. This document is the **single source of truth** for what's been validated, what's broken, and what to do next. Supersedes `docs/plan.md` for current state.
+Written 2026-05-14, updated same day after the seed-execution pass. This document is the **single source of truth** for what's been validated, what's broken, and what to do next. Supersedes `docs/plan.md` for current state.
+
+---
+
+## Update: Seed phase complete (2026-05-14, evening)
+
+**All 11 seed CTASs have been refactored, executed, and validated against real data.** Snowflake now contains the full JB historical NBA dataset, ready for BR scrape backfill.
+
+### What was done in the seed pass
+
+1. **Pattern refactor**: All 11 seed files converted from `CREATE OR REPLACE TABLE AS SELECT` to `TRUNCATE + INSERT`. This preserves column comments, table comments, and PRIMARY KEY declarations from `040_flat_tables.sql` — previously, CTAS clobbered all DDL metadata. `040_flat_tables.sql` is now also re-runnable (`CREATE OR REPLACE TABLE`).
+2. **Type fixes**: 6 categories of type errors caught and corrected against real source schemas — `TRY_TO_NUMBER` refuses `NUMBER(38,1)→NUMBER(38,0)`, requiring `::INT`; PCT cols differ in scale between PS1/PS2; LINE_SCORE mixes NUMBER and VARCHAR; PCTIMESTRING is `TIME(9)` not VARCHAR; PLAYERS2 booleans are real BOOLEAN; DRAFT_COMBINE_STATS has 80+ cols including 27 shot-spot variants.
+3. **Column-name corrections**: 5 wrong references caught (`TEAM_ID` vs `ID`, `GLEAGUEAFFILIATE` vs `DLEAGUEAFFILIATION`, `HOME_TEAM_ABBREVIATION` vs `TEAM_ABBREVIATION_HOME`, etc.).
+4. **Data-quality normalizations**:
+   - `line_scores`: regulation games encoded as `0/0` for OT periods → normalized to NULL. Real OT count now 3,290 (~5.7%, matches NBA reality of ~6%).
+   - `team_history`: JB's `2100` "still active" sentinel → NULL via `NULLIF`.
+
+### Final row counts (all from real seed execution)
+
+| Table | Rows | Notes |
+|---|---|---|
+| games | 65,642 | 1946-11-01 → 2023-06-12, 0 NULL home_pts, 56 dupes dedup'd |
+| player_box_basic | 1,568,763 | 1946-11-26 → 2025-04-06, Preseason filtered |
+| line_scores | 58,053 | 3,290 real OT games (~5.7%, fix worked) |
+| game_officials | 70,941 | 235 refs, 23,575 games |
+| game_inactives | 110,191 | 20,312 games |
+| players | 6,533 | 1,975 NULL position (JB gap) |
+| teams | 30 | 5 NULL arena/coach (ORL/NYK/BOS/CLE/NOP — predicted) |
+| team_history | 72 | NBA only; OKC: Seattle 1967-2007 + OKC 2008-NULL |
+| draft | 7,990 | 1947-2023; #1 2023 = Wembanyama ✓ |
+| draft_combine | 1,202 | 2001-2023 |
+| play_by_play | 2,416,774 | 5,337 games, modern only |
+
+### Ground-truth spot checks (all PASS)
+
+- Wilt's 100-pt game (1962-03-02): 100/25/36, 63 FGA ✓
+- Kobe's 81 (2006-01-22): 81/6/28, 46 FGA ✓
+- Luka's 73 (2024-01-26): 73/10/25, 33 FGA ✓
+- First NBA game (1946-11-01): NYK 68 vs HUS 66 ✓
+- 2023 Finals G5: Nuggets 94, Heat 89 ✓
+- 2023 Finals G5 line score: DEN 22/22/26/24, MIA 24/27/20/18 ✓
+- 2023 Draft top 5: Wembanyama / Miller / Henderson / A. Thompson / Au. Thompson ✓
+- 2023 G5 full box (15 players, Jokic 28/4/16, Murray 14, Butler 21, Bam 20) ✓
+
+### Known data gaps (acceptable / fillable)
+
+| Gap | Count | Cause | Disposition |
+|---|---|---|---|
+| Orphan player_box rows: 2024-25 seasons | 53,069 | FLAT.games stops at 2023-06-12 | **BR scrape fills** (by design) |
+| Orphan player_box rows: 1958-1977 | ~88K | JB GAME table missing some early games (PS2 broader) | Accept — bonus history |
+| line_score Q-sum mismatches: 1946-1957 | 1,051 | Pre-modern era only recorded totals | Accept — historical limitation |
+| line_score Q-sum mismatches: post-1960 | 13 | Anomalies in JB | Accept (negligible) |
+| NULL position in players | 1,975 | JB didn't populate GUARD/FORWARD/CENTER flags | Accept; BR scrape could backfill |
+| LeBron's player metadata | 1 player | JB gap for player_info on some stars | Accept; cosmetic only |
+| Wembanyama draft_combine | 1 player | He skipped the 2023 combine | Correct, not a bug |
+
+### Verdict (Directive 2): **Keep the seed. Do NOT discard for scrape.**
+
+Every ground-truth value matches reality exactly across 77 years of basketball. The gaps are inherent to data availability, not JB's ingestion. Scraping wouldn't improve the matched data and would only re-pull what we already have correctly. The 2023-25 gap is the **designed boundary** for BR scrape, not a JB flaw.
+
+### Real game_id format (informs architectural decision #1)
+
+NBA's canonical 8-char numeric format: `[type][YY][seq]` where type=2 (regular season), 4 (playoffs), 5 (play-in); YY=season start year (2-digit); seq=5-digit. Examples: `42200405` (2022-23 playoffs game 405), `24600001` (1946-47 game 1). All 65,642 game_ids are exactly 8 characters. Same format as the NBA Stats API uses.
 
 ---
 

@@ -222,13 +222,16 @@ ORDER BY year_founded;
 -- Cross-reference: https://www.basketball-reference.com/draft/NBA_2023.html combine data
 -- ============================================================
 
-SELECT player_name, season, position, height_wo_shoes, height_w_shoes,
-       wingspan, standing_reach, weight, standing_vertical_leap, max_vertical_leap
+-- FLAT.draft_combine renames JB columns; HEIGHT_WO_SHOES became `height`,
+-- STANDING_VERTICAL_LEAP became `standing_vert`, MAX_VERTICAL_LEAP became
+-- `max_vert`. HEIGHT_W_SHOES was not carried into FLAT (informational only).
+SELECT player_name, season, position, height,
+       wingspan, standing_reach, weight, standing_vert, max_vert
 FROM ZK_NBA.FLAT.draft_combine
 WHERE season = 2023
   AND player_name ILIKE '%Wembanyama%';
 -- Expected: Wembanyama's 2023 combine measurements
--- Height w/ shoes: reportedly ~7'4"; wingspan: ~8'0" — verify exact numbers against BR
+-- Height w/o shoes: reportedly ~7'2.7"; wingspan: ~8'0" — verify against BR.
 
 -- ============================================================
 -- TABLE: play_by_play

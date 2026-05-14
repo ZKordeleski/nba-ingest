@@ -1,33 +1,37 @@
 -- Seed ZK_NBA.FLAT.team_history from JB_HISTORIC_NBA.PUBLIC.TEAMHISTORIES.
 --
--- TEAMHISTORIES has 140 rows covering team relocations and name changes
--- across NBA history (e.g., Seattle SuperSonics -> Oklahoma City Thunder,
--- New Jersey Nets -> Brooklyn Nets, etc.).
+-- Pattern: TRUNCATE + INSERT (preserves DDL comments/PK).
 --
--- Run after 040_flat_tables.sql.
+-- TEAMHISTORIES has 140 rows total across multiple leagues. Filtering to
+-- LEAGUE = 'NBA' yields 72 rows of NBA franchise relocations and rebrands
+-- (e.g., Seattle SuperSonics → Oklahoma City Thunder).
+--
+-- COLUMN MAP (via DESCRIBE 2026-05-14):
+--   TEAMID, TEAMCITY, TEAMNAME, TEAMABBREV, SEASONFOUNDED, SEASONACTIVETILL, LEAGUE.
+--   (Not TEAM_ID / CITY / NICKNAME / YEAR_FOUNDED / YEAR_ACTIVE_TILL.)
 
 USE ROLE DEVELOPER_ADMIN;
 USE DATABASE ZK_NBA;
 USE WAREHOUSE NBA_INGEST_WH;
 
--- First: inspect the TEAMHISTORIES schema
--- DESCRIBE TABLE JB_HISTORIC_NBA.PUBLIC.TEAMHISTORIES;
+TRUNCATE TABLE ZK_NBA.FLAT.team_history;
 
-CREATE OR REPLACE TABLE ZK_NBA.FLAT.team_history AS
+INSERT INTO ZK_NBA.FLAT.team_history (
+    team_id, city, nickname, year_founded, year_active_till, fetched_at
+)
 SELECT
-    TRY_TO_NUMBER(TEAM_ID)          AS team_id,
-    TRIM(CITY)                      AS city,
-    TRIM(NICKNAME)                  AS nickname,
-    TRY_TO_NUMBER(YEAR_FOUNDED)     AS year_founded,
-    TRY_TO_NUMBER(YEAR_ACTIVE_TILL) AS year_active_till,
-    CURRENT_TIMESTAMP()             AS fetched_at
-FROM JB_HISTORIC_NBA.PUBLIC.TEAMHISTORIES;
+    TEAMID::INT                      AS team_id,
+    TRIM(TEAMCITY)                   AS city,
+    TRIM(TEAMNAME)                   AS nickname,
+    SEASONFOUNDED::INT               AS year_founded,
+    NULLIF(SEASONACTIVETILL::INT, 2100) AS year_active_till,  -- JB uses 2100 as "still active" sentinel
+    CURRENT_TIMESTAMP()              AS fetched_at
+FROM JB_HISTORIC_NBA.PUBLIC.TEAMHISTORIES
+WHERE LEAGUE = 'NBA';
 
--- Verify
 SELECT COUNT(*) AS total_rows FROM ZK_NBA.FLAT.team_history;
--- Expected: ~140
 
--- Sample: OKC history (should show Seattle SuperSonics era + OKC era)
+-- Spot: OKC history should show Seattle SuperSonics + OKC Thunder eras
 SELECT city, nickname, year_founded, year_active_till
 FROM ZK_NBA.FLAT.team_history
 WHERE team_id = (SELECT team_id FROM ZK_NBA.FLAT.teams WHERE abbreviation = 'OKC')

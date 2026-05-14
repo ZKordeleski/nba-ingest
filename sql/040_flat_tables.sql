@@ -15,7 +15,7 @@ USE WAREHOUSE NBA_INGEST_WH;
 -- Grain: one row per game. Wide format: both teams' box stats in one row.
 -- Source: JB_HISTORIC_NBA.PUBLIC.GAME (1946-Jun 2023) + BR scrape (2023-present).
 -- --------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS ZK_NBA.FLAT.games (
+CREATE OR REPLACE TABLE ZK_NBA.FLAT.games (
     game_id              STRING  NOT NULL COMMENT 'NBA game ID (e.g. 42200405). String to preserve leading zeros if any.',
     game_date            DATE    NOT NULL COMMENT 'Calendar date the game was played.',
     season               INT              COMMENT 'Season end year (e.g. 2023 for 2022-23 season).',
@@ -76,7 +76,7 @@ COMMENT = 'One row per game. Wide format: both teams stats in one row. Source: J
 -- Grain: one row per player per game.
 -- Source: JB PLAYERSTATISTICS1+2 union (1946-Apr 2025) + BR scrape (ongoing).
 -- --------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS ZK_NBA.FLAT.player_box_basic (
+CREATE OR REPLACE TABLE ZK_NBA.FLAT.player_box_basic (
     game_id              STRING  NOT NULL COMMENT 'NBA game ID. Join to games.game_id.',
     player_id            STRING  NOT NULL COMMENT 'NBA player ID (PERSONID from JB, or BR player slug converted to ID).',
     player_name          STRING           COMMENT 'Full player name (first + last).',
@@ -120,7 +120,7 @@ COMMENT = 'One row per player per game. Basic box score stats. Source: JB PLAYER
 -- player_box_advanced
 -- Grain: one row per player per game (BR only; null for pre-2023 games).
 -- --------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS ZK_NBA.FLAT.player_box_advanced (
+CREATE OR REPLACE TABLE ZK_NBA.FLAT.player_box_advanced (
     game_id              STRING  NOT NULL COMMENT 'Join to player_box_basic on (game_id, player_id).',
     player_id            STRING  NOT NULL COMMENT 'Player ID.',
     ts_pct               FLOAT            COMMENT 'True shooting percentage. (PTS / (2 * (FGA + 0.44 * FTA)))',
@@ -149,7 +149,7 @@ COMMENT = 'Advanced box score stats per player per game. BR scrape only — not 
 -- Grain: one row per game (home+away in one wide row).
 -- Source: JB LINE_SCORE + BR scrape (line_score hidden table).
 -- --------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS ZK_NBA.FLAT.line_scores (
+CREATE OR REPLACE TABLE ZK_NBA.FLAT.line_scores (
     game_id              STRING  NOT NULL COMMENT 'Join to games.game_id.',
     game_date            DATE             COMMENT 'Calendar date of the game.',
     home_team_abbr       STRING           COMMENT 'Home team abbreviation.',
@@ -184,7 +184,7 @@ COMMENT = 'Quarter-by-quarter scoring. One row per game (home + away wide). Sour
 -- Grain: one row per official per game.
 -- Source: JB OFFICIALS (modern only, ~23,575 games).
 -- --------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS ZK_NBA.FLAT.game_officials (
+CREATE OR REPLACE TABLE ZK_NBA.FLAT.game_officials (
     game_id              STRING  NOT NULL COMMENT 'Join to games.game_id.',
     official_id          INT     NOT NULL COMMENT 'NBA official ID.',
     first_name           STRING           COMMENT 'Official''s first name.',
@@ -201,7 +201,7 @@ COMMENT = 'Referee assignments per game. One row per official per game. Source: 
 -- Grain: one row per inactive player per game.
 -- Source: JB INACTIVE_PLAYERS (modern only).
 -- --------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS ZK_NBA.FLAT.game_inactives (
+CREATE OR REPLACE TABLE ZK_NBA.FLAT.game_inactives (
     game_id              STRING  NOT NULL COMMENT 'Join to games.game_id.',
     player_id            INT     NOT NULL COMMENT 'NBA player ID of the inactive player.',
     first_name           STRING           COMMENT 'Player''s first name.',
@@ -220,7 +220,7 @@ COMMENT = 'Players listed as inactive (injured, rested, etc.) for a given game. 
 -- Grain: one row per player (current career record).
 -- Source: JB PLAYERS2 (6,533 players).
 -- --------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS ZK_NBA.FLAT.players (
+CREATE OR REPLACE TABLE ZK_NBA.FLAT.players (
     player_id            STRING  NOT NULL COMMENT 'NBA player ID (PERSONID from JB).',
     first_name           STRING           COMMENT 'Player''s first name.',
     last_name            STRING           COMMENT 'Player''s last name.',
@@ -246,7 +246,7 @@ COMMENT = 'One row per NBA player. Source: JB PLAYERS2. Covers 6,533 players —
 -- Grain: one row per current team (30 teams).
 -- Source: JB TEAM + TEAM_DETAILS (25/30); 5 supplemented from BR.
 -- --------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS ZK_NBA.FLAT.teams (
+CREATE OR REPLACE TABLE ZK_NBA.FLAT.teams (
     team_id              INT     NOT NULL COMMENT 'NBA team ID.',
     abbreviation         STRING           COMMENT 'Team abbreviation (NBA style, e.g. DEN, MIA, BOS).',
     full_name            STRING           COMMENT 'Full team name (e.g. Denver Nuggets).',
@@ -267,7 +267,7 @@ COMMENT = 'One row per current NBA team (30 teams). Source: JB TEAM + TEAM_DETAI
 -- Grain: one row per team-name-era (city/nickname changes and relocations).
 -- Source: JB TEAMHISTORIES (140 rows).
 -- --------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS ZK_NBA.FLAT.team_history (
+CREATE OR REPLACE TABLE ZK_NBA.FLAT.team_history (
     team_id              INT     NOT NULL COMMENT 'NBA team ID (links to current teams.team_id).',
     city                 STRING           COMMENT 'City the team played in during this era.',
     nickname             STRING           COMMENT 'Team nickname during this era (e.g. Supersonics, Bullets).',
@@ -282,7 +282,7 @@ COMMENT = 'Team relocation and name-change history. One row per era. Source: JB 
 -- Grain: one row per draft pick.
 -- Source: JB DRAFT_HISTORY (1947-2023) + BR scrape (2024-2025 in Slice 5).
 -- --------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS ZK_NBA.FLAT.draft (
+CREATE OR REPLACE TABLE ZK_NBA.FLAT.draft (
     person_id            INT              COMMENT 'NBA player ID for this pick.',
     player_name          STRING           COMMENT 'Player name at draft time.',
     season               INT     NOT NULL COMMENT 'Draft year (e.g. 2023).',
@@ -305,7 +305,7 @@ COMMENT = 'NBA draft history. One row per pick. Source: JB DRAFT_HISTORY (1947-2
 -- Grain: one row per combine participant per season.
 -- Source: JB DRAFT_COMBINE_STATS (~1,202 rows).
 -- --------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS ZK_NBA.FLAT.draft_combine (
+CREATE OR REPLACE TABLE ZK_NBA.FLAT.draft_combine (
     player_id            STRING           COMMENT 'NBA player ID.',
     player_name          STRING           COMMENT 'Player name.',
     season               INT              COMMENT 'Draft year.',
@@ -333,7 +333,7 @@ COMMENT = 'NBA Draft Combine measurements. One row per participant per year. Sou
 -- Grain: one row per play-by-play event.
 -- Source: JB PLAY_BY_PLAY_PART001 UNION PLAY_BY_PLAY_PART002 (~2.4M rows).
 -- --------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS ZK_NBA.FLAT.play_by_play (
+CREATE OR REPLACE TABLE ZK_NBA.FLAT.play_by_play (
     game_id              STRING  NOT NULL COMMENT 'Join to games.game_id.',
     event_num            INT     NOT NULL COMMENT 'Sequential event number within the game.',
     event_type           INT              COMMENT 'NBA event message type code (EVENTMSGTYPE).',
@@ -366,7 +366,7 @@ COMMENT = 'Play-by-play event log. One row per event. Source: JB PLAY_BY_PLAY_PA
 -- Grain: one row per draft pick (annually refreshed from BR).
 -- Source: BR /draft/NBA_{year}.html (Slice 5 — weekly_meta job).
 -- --------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS ZK_NBA.FLAT.draft_career_stats (
+CREATE OR REPLACE TABLE ZK_NBA.FLAT.draft_career_stats (
     season               INT     NOT NULL COMMENT 'Draft year.',
     overall_pick         INT     NOT NULL COMMENT 'Overall pick number.',
     player_name          STRING           COMMENT 'Player name.',

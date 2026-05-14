@@ -42,7 +42,7 @@ WHERE g.game_id IS NULL;
 -- This count should be close to: rows for games after 2023-06-12
 
 -- Count orphaned player-box rows by year to understand the scope
-SELECT YEAR(game_date) AS yr, COUNT(*) AS orphaned_rows
+SELECT YEAR(pb.game_date) AS yr, COUNT(*) AS orphaned_rows
 FROM ZK_NBA.FLAT.player_box_basic pb
 LEFT JOIN ZK_NBA.FLAT.games g ON pb.game_id = g.game_id
 WHERE g.game_id IS NULL
