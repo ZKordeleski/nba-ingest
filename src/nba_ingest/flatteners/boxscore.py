@@ -24,12 +24,15 @@ logger = logging.getLogger(__name__)
 def _flatten_columns(df: pd.DataFrame) -> pd.DataFrame:
     """Flatten MultiIndex column headers to single strings.
 
-    BR box tables have two-level headers. pd.read_html returns them as tuples.
-    Example: ('Basic Box Score Stats', 'MP') -> 'Basic Box Score Stats_MP'
-    Then we strip the section prefix to get 'MP'.
+    BR box tables have two-level headers. pd.read_html returns them as tuples
+    like ('Basic Box Score Stats', 'MP'). We keep only the LAST element so
+    lookups work with short names ('MP', 'PTS', 'FG', etc.).
+
+    Taking the full joined string ('Basic Box Score Stats_MP') would break
+    every stat lookup since the code accesses short names.
     """
     if isinstance(df.columns, pd.MultiIndex):
-        df.columns = ["_".join(str(c) for c in col).strip("_") for col in df.columns]
+        df.columns = [str(col[-1]) if isinstance(col, tuple) else str(col) for col in df.columns]
     return df
 
 

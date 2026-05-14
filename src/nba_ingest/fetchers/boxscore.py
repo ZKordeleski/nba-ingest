@@ -38,24 +38,39 @@ def _team_abbrs_from_slug(game_slug: str) -> tuple[str, str]:
     return home, ""
 
 
-def _find_team_abbrs_from_tables(visible: dict[str, pd.DataFrame]) -> tuple[str, str]:
+def _find_team_abbrs_from_tables(game_slug: str, visible: dict[str, pd.DataFrame]) -> tuple[str, str]:
     """Find home and away team abbreviations from the visible table IDs.
 
-    BR box table IDs follow the pattern: box-{TEAM}-game-basic.
-    Two such tables exist per page — one for each team. The home team is the
-    one that matches the slug's last 3 chars; the other is away.
+    BR box table IDs follow the pattern: box-{TEAM}-game-basic. The home team
+    is derived from the game slug (last 3 chars are always the home team code).
+    BR lists the away team's box tables first in the HTML, so we cannot rely
+    on insertion order to distinguish home from away.
+
+    Args:
+        game_slug: BR game slug (e.g., "20231025ODAL"). Last 3 chars = home team.
+        visible: Dict of visible tables from parse_tables_with_comments.
 
     Returns:
         (home_abbr, away_abbr) — empty strings if not found.
     """
+    home_from_slug = game_slug[-3:]
     teams: list[str] = []
     for table_id in visible:
         m = re.match(r"^box-([A-Z]{2,3})-game-basic$", table_id)
         if m:
             teams.append(m.group(1))
+
     if len(teams) == 2:
+        if home_from_slug in teams:
+            away = next(t for t in teams if t != home_from_slug)
+            return home_from_slug, away
+        # Slug home team not found in tables — log and fall back to order
+        logger.warning(
+            "Slug home team %s not found in box table IDs %s for %s",
+            home_from_slug, teams, game_slug,
+        )
         return teams[0], teams[1]
-    return "", ""
+    return home_from_slug, ""
 
 
 def _parse_meta(html: str) -> dict:
@@ -120,12 +135,10 @@ def fetch_boxscore(game_slug: str) -> dict:
     html = fetch(url)
     visible, hidden = parse_tables_with_comments(html)
 
-    # Determine team abbreviations from the visible table IDs.
-    home_team, away_team = _find_team_abbrs_from_tables(visible)
+    # Determine team abbreviations. Home team is always the slug's last 3 chars.
+    home_team, away_team = _find_team_abbrs_from_tables(game_slug, visible)
     if not home_team:
-        # Fall back to slug-derived home team.
-        home_team = game_slug[-3:]
-        logger.warning("Could not determine team abbrs from table IDs for %s", game_slug)
+        logger.warning("Could not determine team abbrs for %s", game_slug)
 
     result: dict = {
         "game_slug": game_slug,

@@ -90,7 +90,7 @@ def _merge_player_box_basic(conn, ndjson_path: Path, stage: str) -> None:
         FROM {stage}/{ndjson_path.name}
         (FILE_FORMAT => (TYPE = 'JSON'))
     ) AS src
-    ON target.game_id = src.game_id AND target.player_id = src.player_id
+    ON target.game_id = src.game_id AND target.player_name = src.player_name
     WHEN MATCHED THEN UPDATE SET
         player_name = src.player_name,
         team_abbr = src.team_abbr,
