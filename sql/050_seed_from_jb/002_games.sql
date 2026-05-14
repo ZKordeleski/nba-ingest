@@ -14,7 +14,21 @@ USE ROLE DEVELOPER_ADMIN;
 USE DATABASE ZK_NBA;
 USE WAREHOUSE NBA_INGEST_WH;
 
+-- PRE-SEED VALIDATION FINDINGS (run against JB source 2026-05-11):
+--   - 65,698 total rows, 65,642 distinct GAME_IDs = 56 duplicate game_ids.
+--   - Duplicates are early-era games (1930s-1940s season_ids).
+--   - All VARCHAR stat columns (STL_HOME, BLK_HOME, etc.) are actually numeric —
+--     0 non-numeric values found; TRY_TO_NUMBER() casts cleanly.
+--   - No null GAME_ID, GAME_DATE, PTS_HOME, or SEASON_TYPE.
+--   - Deduplication strategy: take first row per GAME_ID by GAME_DATE DESC.
+
 CREATE OR REPLACE TABLE ZK_NBA.FLAT.games AS
+WITH deduped AS (
+    -- Remove 56 duplicate GAME_IDs found in JB source (early-era load artifacts)
+    SELECT *,
+           ROW_NUMBER() OVER (PARTITION BY GAME_ID ORDER BY GAME_DATE DESC) AS rn
+    FROM JB_HISTORIC_NBA.PUBLIC.GAME
+)
 SELECT
     GAME_ID::STRING                            AS game_id,
     GAME_DATE::DATE                            AS game_date,
@@ -68,11 +82,12 @@ SELECT
     TRY_TO_NUMBER(PLUS_MINUS_AWAY)             AS away_plus_minus,
     'jb_seed'                                  AS source,
     CURRENT_TIMESTAMP()                        AS fetched_at
-FROM JB_HISTORIC_NBA.PUBLIC.GAME;
+FROM deduped
+WHERE rn = 1;  -- Take one row per GAME_ID; eliminates 56 duplicates
 
 -- Verify
 SELECT COUNT(*) AS total_rows FROM ZK_NBA.FLAT.games;
--- Expected: ~65,642
+-- Expected: ~65,642 (deduplication removed 56 extra rows from 65,698 source rows)
 
 SELECT MIN(game_date) AS min_date, MAX(game_date) AS max_date FROM ZK_NBA.FLAT.games;
 -- Expected: 1946-11-01 to 2023-06-12
