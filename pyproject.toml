@@ -13,6 +13,7 @@ dependencies = [
     "cryptography>=42.0",
     "beautifulsoup4>=4.12",
     "html5lib>=1.1",
+    "lxml>=4.9",
     "pandas>=2.0",
 ]
 

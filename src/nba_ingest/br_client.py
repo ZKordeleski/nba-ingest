@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+from io import StringIO
 from typing import Optional
 
 import pandas as pd
@@ -126,12 +127,17 @@ def _extract_tables_from_soup(soup: BeautifulSoup) -> dict[str, pd.DataFrame]:
     for table in soup.find_all("table", id=True):
         table_id = table["id"]
         try:
-            # BR tables typically have thead/tbody; read_html handles multi-level headers.
-            dfs = pd.read_html(str(table))
+            # Wrap in StringIO — lxml treats a bare HTML string as a file path
+            # if it doesn't look like a URL, causing OSError on long strings.
+            dfs = pd.read_html(StringIO(str(table)))
             if dfs:
                 tables[table_id] = dfs[0]
-        except Exception:
-            logger.debug("Could not parse table id=%s", table_id)
+        except ValueError:
+            # pd.read_html raises ValueError when a table has no parseable data.
+            # This is expected for some BR placeholder tables — skip silently.
+            logger.debug("No data in table id=%s", table_id)
+        # ImportError and other serious errors are NOT caught — they indicate a
+        # missing dependency (lxml) or structural problem that must surface loudly.
     return tables
 
 
