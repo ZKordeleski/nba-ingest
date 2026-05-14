@@ -83,10 +83,11 @@ def _collect_game_dates(end_year: int) -> list[date]:
             if not row.get("has_score"):
                 continue  # Game hasn't been played yet
             try:
-                game_date = datetime.strptime(row["game_date"], "%a, %b %d, %Y").date()
+                # flatten_schedule outputs ISO format "YYYY-MM-DD".
+                game_date = datetime.strptime(row["game_date"], "%Y-%m-%d").date()
                 game_dates.add(game_date)
             except (ValueError, TypeError):
-                logger.debug("Could not parse date: %r", row.get("game_date"))
+                logger.warning("Could not parse date: %r", row.get("game_date"))
 
     sorted_dates = sorted(game_dates)
     logger.info("Found %d game dates in season %d", len(sorted_dates), end_year)
