@@ -1,23 +1,30 @@
-"""Slice A: settle one game into FLAT.games.
+"""Daily settle job (Slices A-D + G): settle BR boxscores into FLAT tables.
 
-This is the minimal end-to-end pipeline: fetch a BR boxscore by slug, flatten
-to a single FLAT.games row, MERGE into Snowflake. It proves the game→Snowflake
-pipe before later slices add player_box, line_scores, etc.
+Modes (selected by env var):
 
-Usage:
-    # Slice A test (default known-good slug):
-    python -m nba_ingest.jobs.daily_settle
+    SETTLE_SLUG=202404090MEM
+        Settle just this one game. Used for testing or backfilling a single
+        known slug.
 
-    # Specify a different slug:
-    SETTLE_SLUG=20240409OMEM python -m nba_ingest.jobs.daily_settle
+    SETTLE_DATE=2024-04-09
+        Settle all games on this date. Use for backfilling a specific day.
 
-The MERGE is idempotent on game_id. Re-running on the same slug updates the
-existing row in place (fetched_at advances, stat columns reflect the latest
-fetch) — no duplicate row, no second insert.
+    (neither set)
+        Settle all games from yesterday. This is what the GitHub Actions cron
+        invokes; "yesterday" is enough lead time that all games have ended
+        and BR has published box scores.
 
-Future slices (B-F) will extend this to player_box_basic, line_scores,
-player_box_advanced, game_officials, game_inactives. Slice G adds the
-multi-game daily loop. Until those slices land, this file does ONE thing well.
+Writes 4 FLAT tables per game (Slices A-D):
+    games, player_box_basic, player_box_advanced, line_scores
+
+Slices E (game_officials) and F (game_inactives) are deferred until the
+officials-schema architectural decision (#2 in HANDOFF.md) is resolved.
+
+All MERGEs are idempotent on their natural keys. Re-running on the same
+date updates rows in place — no duplicates, fetched_at advances.
+
+One Snowflake connection is shared across all games in a daily loop to
+avoid 14× connect overhead.
 """
 
 from __future__ import annotations
@@ -25,8 +32,8 @@ from __future__ import annotations
 import json
 import logging
 import os
-import sys
 import tempfile
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -37,6 +44,7 @@ load_dotenv(Path(__file__).resolve().parents[3] / ".env", override=False)
 
 from nba_ingest import snowflake_client
 from nba_ingest.fetchers.boxscore import fetch_boxscore
+from nba_ingest.fetchers.games import list_games_on_date
 from nba_ingest.flatteners.boxscore import (
     flatten_game_row,
     flatten_line_score,
@@ -49,10 +57,6 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s — %(message)s",
 )
 logger = logging.getLogger(__name__)
-
-# Slice A test slug: 2024 Apr 9, SAS @ MEM, MEM 102-87. Known-good per HANDOFF.
-# BR slug format: YYYYMMDD + "0" (digit separator) + HOME team (3 chars).
-DEFAULT_SLUG = "202404090MEM"
 
 STAGE_PATH = "@ZK_NBA.RAW.INGEST_STAGE/flat"
 
@@ -392,16 +396,18 @@ def _merge_rows(
     return inserted, updated
 
 
-def settle_one(slug: str) -> dict:
-    """Settle a single game by slug.
+def _settle_game(slug: str, conn, tmpdir: Path) -> dict:
+    """Settle a single game; shares an open conn + tmpdir with the caller.
 
-    Writes:
-        - one FLAT.games row
-        - N FLAT.player_box_basic rows (~20-30 per game)
+    Used by both settle_one() (single-game CLI) and settle_date() (daily loop).
+    Lifting connection ownership to the caller avoids re-connecting per game
+    when a daily run has ~14 games.
 
-    Returns a dict summarizing the work done.
+    Returns a dict summarizing the row counts and (inserted, updated) per
+    table. On per-game failure, raises — the caller decides whether to halt
+    or continue.
     """
-    logger.info("Fetching boxscore for %s", slug)
+    logger.info("Settling %s", slug)
     box = fetch_boxscore(slug)
 
     home_team = box["home_team"]
@@ -414,7 +420,6 @@ def settle_one(slug: str) -> dict:
     if home_df is None or away_df is None:
         raise RuntimeError(f"Missing basic box DataFrame(s) for {slug}")
 
-    # Flatten: one games row + many player_box rows (home + away).
     game_row = flatten_game_row(
         game_slug=slug,
         home_team=home_team,
@@ -430,44 +435,20 @@ def settle_one(slug: str) -> dict:
         flatten_player_box_basic(slug, home_team, home_df, is_home=True)
         + flatten_player_box_basic(slug, away_team, away_df, is_home=False)
     )
-
     advanced_rows = (
         flatten_player_box_advanced(slug, home_team, box["advanced"].get("home"))
         + flatten_player_box_advanced(slug, away_team, box["advanced"].get("away"))
     )
-
     line_row = flatten_line_score(slug, box.get("line_score"))
     line_rows = [line_row] if line_row else []
 
-    logger.info(
-        "Flattened: 1 game + %d basic + %d advanced + %d line_score "
-        "(%s %s @ %s %s, %s)",
-        len(player_rows), len(advanced_rows), len(line_rows),
-        away_team, game_row["away_pts"], home_team, game_row["home_pts"],
-        game_row["game_date"],
-    )
-
-    conn = snowflake_client.connect()
-    try:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp = Path(tmpdir)
-            games_inserted, games_updated = _merge_rows(
-                conn, [game_row], GAMES_MERGE_SQL, "games", slug, tmp,
-            )
-            box_inserted, box_updated = _merge_rows(
-                conn, player_rows, PLAYER_BOX_BASIC_MERGE_SQL,
-                "player_box_basic", slug, tmp,
-            )
-            adv_inserted, adv_updated = _merge_rows(
-                conn, advanced_rows, PLAYER_BOX_ADVANCED_MERGE_SQL,
-                "player_box_advanced", slug, tmp,
-            )
-            line_inserted, line_updated = _merge_rows(
-                conn, line_rows, LINE_SCORES_MERGE_SQL,
-                "line_scores", slug, tmp,
-            )
-    finally:
-        conn.close()
+    g_ins, g_upd = _merge_rows(conn, [game_row], GAMES_MERGE_SQL, "games", slug, tmpdir)
+    b_ins, b_upd = _merge_rows(conn, player_rows, PLAYER_BOX_BASIC_MERGE_SQL,
+                                "player_box_basic", slug, tmpdir)
+    a_ins, a_upd = _merge_rows(conn, advanced_rows, PLAYER_BOX_ADVANCED_MERGE_SQL,
+                                "player_box_advanced", slug, tmpdir)
+    l_ins, l_upd = _merge_rows(conn, line_rows, LINE_SCORES_MERGE_SQL,
+                                "line_scores", slug, tmpdir)
 
     return {
         "game_id": slug,
@@ -475,32 +456,105 @@ def settle_one(slug: str) -> dict:
         "player_count": len(player_rows),
         "advanced_count": len(advanced_rows),
         "line_score_count": len(line_rows),
-        "games_inserted": games_inserted,
-        "games_updated": games_updated,
-        "player_box_inserted": box_inserted,
-        "player_box_updated": box_updated,
-        "player_box_advanced_inserted": adv_inserted,
-        "player_box_advanced_updated": adv_updated,
-        "line_scores_inserted": line_inserted,
-        "line_scores_updated": line_updated,
+        "games_inserted": g_ins, "games_updated": g_upd,
+        "player_box_inserted": b_ins, "player_box_updated": b_upd,
+        "player_box_advanced_inserted": a_ins, "player_box_advanced_updated": a_upd,
+        "line_scores_inserted": l_ins, "line_scores_updated": l_upd,
     }
 
 
-def main() -> None:
-    slug = os.environ.get("SETTLE_SLUG", "").strip() or DEFAULT_SLUG
-    logger.info("Slice D — settling slug: %s", slug)
-    result = settle_one(slug)
+def settle_one(slug: str) -> dict:
+    """Settle a single game by slug (CLI entry point).
+
+    Thin wrapper around _settle_game that opens its own conn + tmpdir.
+    """
+    conn = snowflake_client.connect()
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            return _settle_game(slug, conn, Path(tmpdir))
+    finally:
+        conn.close()
+
+
+def settle_date(target_date: date) -> dict:
+    """Settle all games on the given date (Slice G daily loop).
+
+    Iterates list_games_on_date(target_date) and calls _settle_game for each
+    slug, sharing one Snowflake connection across all games. Per-game failures
+    log + continue; only one game's miss doesn't halt the rest.
+
+    Returns aggregate counters across all games settled.
+    """
+    slugs = list_games_on_date(target_date)
+    logger.info("settle_date(%s) — found %d game(s)", target_date, len(slugs))
+    if not slugs:
+        logger.info("No games on %s — exiting cleanly.", target_date)
+        return {"date": target_date.isoformat(), "games_found": 0, "games_settled": 0,
+                "games_failed": 0, "totals": {}}
+
+    totals = {"games_inserted": 0, "games_updated": 0,
+              "player_box_inserted": 0, "player_box_updated": 0,
+              "player_box_advanced_inserted": 0, "player_box_advanced_updated": 0,
+              "line_scores_inserted": 0, "line_scores_updated": 0,
+              "player_count": 0, "advanced_count": 0}
+    settled = 0
+    failed: list[tuple[str, str]] = []
+
+    conn = snowflake_client.connect()
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            for i, slug in enumerate(slugs, 1):
+                logger.info("--- [%d/%d] %s ---", i, len(slugs), slug)
+                try:
+                    result = _settle_game(slug, conn, tmp)
+                    for k in totals:
+                        totals[k] += result.get(k, 0)
+                    settled += 1
+                except Exception as e:
+                    logger.error("Settle failed for %s: %s", slug, e)
+                    failed.append((slug, str(e)))
+    finally:
+        conn.close()
+
     logger.info(
-        "Slice D done: game_id=%s, %s %s @ %s %s — games (+%d/~%d), "
-        "basic (+%d/~%d), advanced (+%d/~%d), line_scores (+%d/~%d)",
-        result["game_id"],
-        result["game_row"]["away_team_abbr"], result["game_row"]["away_pts"],
-        result["game_row"]["home_team_abbr"], result["game_row"]["home_pts"],
-        result["games_inserted"], result["games_updated"],
-        result["player_box_inserted"], result["player_box_updated"],
-        result["player_box_advanced_inserted"], result["player_box_advanced_updated"],
-        result["line_scores_inserted"], result["line_scores_updated"],
+        "settle_date(%s) complete: %d/%d games settled "
+        "(games +%d/~%d, basic +%d/~%d, advanced +%d/~%d, line +%d/~%d)",
+        target_date, settled, len(slugs),
+        totals["games_inserted"], totals["games_updated"],
+        totals["player_box_inserted"], totals["player_box_updated"],
+        totals["player_box_advanced_inserted"], totals["player_box_advanced_updated"],
+        totals["line_scores_inserted"], totals["line_scores_updated"],
     )
+    if failed:
+        logger.warning("Failed slugs (%d): %s", len(failed), [s for s, _ in failed])
+    return {"date": target_date.isoformat(), "games_found": len(slugs),
+            "games_settled": settled, "games_failed": len(failed), "totals": totals}
+
+
+def main() -> None:
+    """CLI dispatcher.
+
+    Mode selection:
+        SETTLE_SLUG=20240409xxx  -> settle just this slug (debug)
+        SETTLE_DATE=YYYY-MM-DD   -> settle all games on this date
+        (neither set)            -> settle all games from yesterday (cron mode)
+    """
+    slug_env = os.environ.get("SETTLE_SLUG", "").strip()
+    date_env = os.environ.get("SETTLE_DATE", "").strip()
+
+    if slug_env:
+        logger.info("settle_one mode (SETTLE_SLUG=%s)", slug_env)
+        settle_one(slug_env)
+        return
+
+    if date_env:
+        target_date = datetime.strptime(date_env, "%Y-%m-%d").date()
+    else:
+        target_date = date.today() - timedelta(days=1)
+
+    logger.info("settle_date mode (target_date=%s)", target_date)
+    settle_date(target_date)
 
 
 if __name__ == "__main__":

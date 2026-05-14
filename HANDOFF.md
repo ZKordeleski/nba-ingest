@@ -221,6 +221,47 @@ Two independent stats systems (basic counting stats and advanced rate stats) tel
 
 ---
 
+## Update: Slice G complete (2026-05-14, evening cont.)
+
+**The daily multi-game loop works end-to-end and is idempotent.** A single `settle_date(d)` call settles all of a day's games into 4 FLAT tables atomically (well, per-game atomic; per-day batched).
+
+### What landed in Slice G
+
+1. **`settle_date(target_date)` function in `daily_settle.py`** — iterates `list_games_on_date(d)`, opens ONE Snowflake connection, processes each game through `_settle_game(slug, conn, tmpdir)` with shared connection + tmpdir. Per-game failures log and continue (one bad game doesn't halt the rest).
+2. **`_settle_game(slug, conn, tmpdir)` extracted** — was the body of `settle_one`. Now takes conn + tmpdir so the daily loop can share them. `settle_one` is now a thin wrapper that opens its own resources.
+3. **Three CLI modes via env vars**:
+   - `SETTLE_SLUG=202404090MEM` — debug a single game
+   - `SETTLE_DATE=2024-04-09` — settle a specific date
+   - (neither set) — settle yesterday (cron mode)
+4. **Removed `DEFAULT_SLUG`** and rewrote module docstring around the production cron contract.
+
+### End-to-end validation (2024-04-09, 14 games)
+
+| Check | Expected | Got |
+|---|---|---|
+| Game count for date | 12-15 per HANDOFF | **14** ✓ |
+| Player_box rows | ~336-420 | **381** (avg 27/game) ✓ |
+| Advanced rows | ~280-360 | **315** (avg 22/game) ✓ |
+| Line scores | 14 | **14** ✓ |
+| All games have all 4 tables | 14/14 complete | **14/14** ✓ |
+| Wall time | ~3 min (BR's 3s crawl-delay × 14) | 3:03 ✓ |
+| First-run inserts | new = all but the SAS@MEM from Slice A-D | games +13/~1 ✓ |
+| Second-run inserts | 0 everywhere | **(0, 14) / (0, 381) / (0, 315) / (0, 14)** ✓ |
+
+### Real-world plausibility checks
+
+The 14 games include recognizable 2023-24 NBA matchups: LAL@GSW (Warriors 134-120), DEN@UTA (champs 111-95), TOR@IND (Pacers 140-123 — high-paced), SAS@MEM (Spurs 102-87 from earlier slices). All scores within plausible NBA ranges (87-140), no zeros or negatives.
+
+### Throughput math
+
+~13s per game = mostly BR's 3s crawl-delay (4 fetches per game). A full 1,230-game regular season backfill = ~4.5 hours. Playoffs (~85 games) = ~20 min. **Slice H (season backfill) is ready to run when the user is.**
+
+### Slices E and F deferred
+
+Both require architectural decision #2 (officials/inactives schema): how to reconcile JB's INT-typed `official_id` (NBA Stats API format like `1830`, `2530`) with BR's slug format (`<a href="/referees/davisma99r.html">`). The job runs without them today and writes all 4 unblocked tables; the daily cron is production-viable as-is for game/box/line_score data.
+
+---
+
 ## Honest assessment: salvage, don't restart
 
 **The repo is ~70% solid and ~30% needs rewrite.** The foundation layers (SQL, fetchers, flatteners, client, tests) have been validated against real Snowflake and real BR data. The job layer (orchestration glue) is broken in ways that require a clean rewrite — but throwing out the validated foundation to start over would lose real work to avoid the messy 30% that needs rewrite anyway.
