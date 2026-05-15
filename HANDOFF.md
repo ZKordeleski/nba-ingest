@@ -382,6 +382,108 @@ Both are ~1-2 hours of work using the same patterns as Slices B-D / I.1. Unblock
 - **The 9 MEM inactives are ALL their stars**: Bane, Jackson Jr., Morant, Smart, Rose, Watanabe. Data captures the late-season tank explicitly. The 12 who *played* were the deep bench (Goodwin, Pippen Jr., Clarke, etc.). 21 players total on the roster, 12 playing + 9 sitting = real-world reconciliation.
 - **39 unit tests pass** (6 new for Slices E/F).
 
+### Update: JB source coverage analysis (2026-05-15)
+
+We use 11 of the 24 tables in `JB_HISTORIC_NBA`. Documented here for the next agent to assess whether any unused tables justify additional FLAT tables.
+
+#### What we use (mapped to FLAT)
+
+`GAME`→games, `LINE_SCORE`→line_scores, `PLAYERSTATISTICS1+2`→player_box_basic, `PLAY_BY_PLAY_PART001+002`→play_by_play, `OFFICIALS`→game_officials, `INACTIVE_PLAYERS`→game_inactives, `PLAYERS2`→players, `TEAM`+`TEAM_DETAILS`→teams, `TEAMHISTORIES`→team_history (NBA filter, 72 of 140 rows), `DRAFT_HISTORY`→draft, `DRAFT_COMBINE_STATS`→draft_combine.
+
+#### What we skipped (low-value or redundant)
+
+- **`GAME_INFO`** (58K rows): adds only ATTENDANCE + GAME_TIME (game duration). Mildly useful for modern games only.
+- **`GAME_SUMMARY`** (58K): live-game state fields (status text, broadcaster, live clock). Most fields stale once game finishes; only `NATL_TV_BROADCASTER_ABBREVIATION` is trivia-interesting.
+- **`TEAM_HISTORY`** (52, distinct from `TEAMHISTORIES`): same schema, smaller — appears to be a partial/older copy. Redundant.
+- **`PLAYER`** (4,831): just name registry. PLAYERS2 has everything PLAYER has plus heights/weights/positions.
+- **`LEAGUESCHEDULE24_25`** (1,305): single-season schedule. We derive schedules dynamically from BR's monthly pages.
+
+#### Three meaningful gaps the next agent should evaluate
+
+##### Gap 1: `TEAMSTATISTICS` (143,464 rows) — narrative team stats
+**Most material gap.** Team-game grain (71,732 games × 2 teams). Has columns nowhere else in our FLAT or in BR scrapes:
+
+| Column | What it tells us |
+|---|---|
+| `BENCHPOINTS` | Bench scoring per team per game |
+| `BIGGESTLEAD` | Peak point margin |
+| `BIGGESTSCORINGRUN` | Longest scoring streak |
+| `LEADCHANGES`, `TIMESTIED` | Game-flow / drama metrics |
+| `POINTSFASTBREAK` | Transition scoring |
+| `POINTSINTHEPAINT` | Interior scoring |
+| `POINTSSECONDCHANCE` | Off offensive rebounds |
+| `POINTSFROMTURNOVERS` | Scoring off forced turnovers |
+| `COACHID` | Who was coaching |
+| `SEASONWINS`, `SEASONLOSSES` | Team record at game time |
+| `TIMEOUTSREMAINING` | End-of-game state |
+
+Coverage: modern era only (likely late-1990s onward when NBA Stats API started recording these).
+
+**Critical limitation if added:** BR's HTML doesn't expose these fields. So a `FLAT.team_box_stats` table sourced from `TEAMSTATISTICS` would freeze at JB's June 2023 cutoff. Daily BR scrapes can't extend it forward. Honest disclosure required when shipping.
+
+##### Gap 2: `COMMON_PLAYER_INFO` (4,171 rows) — richer player metadata
+
+Our `FLAT.players` is sourced from `PLAYERS2`. `COMMON_PLAYER_INFO` adds the following columns we don't have:
+
+| Column | Notes |
+|---|---|
+| `POSITION` (string) | Clean `'G'`/`'F'`/`'C'`/`'G-F'` etc. — much better than our derived position from GUARD/FORWARD/CENTER booleans (which currently leaves ~30% of players NULL). |
+| `JERSEY` | Jersey number |
+| `SCHOOL`, `LAST_AFFILIATION` | More specific than `PLAYERS2.LASTATTENDED` |
+| `ROSTERSTATUS` | active / inactive / retired |
+| `SEASON_EXP` | Career year count |
+| **`GREATEST_75_FLAG`** | Marks the NBA's 75 Greatest Players. Enables `SELECT * FROM players WHERE greatest_75_flag` — fun query. |
+| `PLAYERCODE` | **Possibly an NBA-Stats-API equivalent of BR's slug.** If so, would have offered a cleaner mapping than our name-match resolver in Decision #3. Worth investigating empirically — `SELECT PERSONID, PLAYERCODE FROM COMMON_PLAYER_INFO WHERE PERSONID = 1641705` to see what Wembanyama's PLAYERCODE looks like. |
+
+Only 4,171 rows (vs PLAYERS2's 6,533) — covers currently-active and recently-active players. Best implementation: enrich `FLAT.players` with these as new columns via LEFT JOIN at seed time.
+
+##### Gap 3: `GAMES` (plural, 71,732 rows) — richer game metadata
+Distinct from `GAME` (65,698) — 6,090 extra rows. Columns we don't have:
+
+| Column | Notes |
+|---|---|
+| `ATTENDANCE` | Per-game attendance, all eras (we currently only capture this via BR meta for post-2023 games) |
+| `ARENAID` | Which arena. Pairs naturally with TEAM.arena from our existing seed. |
+| `GAMELABEL` / `GAMESUBLABEL` | "NBA Finals - Game 5", "Christmas Day", etc. — narrative tags |
+| `SERIESGAMENUMBER` | Game 1/2/3/4/5/6/7 within a playoff series |
+| `GAMETYPE` | Likely cleaner taxonomy than our current `season_type` |
+
+The +6,090 extra rows over `GAME` are likely preseason + in-season tournament + All-Star games. Best implementation: add these as new columns to `FLAT.games` via LEFT JOIN at seed time.
+
+#### Bonus discovery: `JEDDY.SYNTHETIC_QUARTERS` (65,698 rows)
+Per-quarter detailed stats: FGA/FGM/3P/FT/REB/AST/STL/BLK/TOV/PF per quarter per team. Much richer than our `line_scores` (which only has points per quarter).
+
+**Caveats:**
+- Lives in `JEDDY` schema, not `PUBLIC` — suggests it's someone's personal experiment, not the JB curator's canonical output
+- Name "SYNTHETIC" implies it was derived from play-by-play, not direct from NBA Stats API
+- Quality may suffer for pre-1990s games where PBP coverage is partial
+
+Worth a spot-check if the next agent wants to add it: query `SELECT * FROM JEDDY.SYNTHETIC_QUARTERS WHERE GAME_ID = 42200405` (2023 Finals G5) and compare Q-by-Q FG% to what BR reports for that game. If close, the data is usable.
+
+#### Implementation effort estimates
+
+| Gap | Effort | Pattern |
+|---|---|---|
+| `FLAT.team_box_stats` from TEAMSTATISTICS | ~30 min | New flat table; CTAS pattern matching `001_player_box.sql`. Add to 040_flat_tables.sql + new 050_seed_from_jb/012_team_box_stats.sql. |
+| Enrich `FLAT.players` from COMMON_PLAYER_INFO | ~20 min | ALTER ADD COLUMN for new fields, UPDATE via LEFT JOIN at seed time. |
+| Enrich `FLAT.games` from `GAMES` plural | ~15 min | Same LEFT JOIN pattern + ADD COLUMN. |
+| Investigate PLAYERCODE | ~5 min | Single SELECT. If it's the BR slug, document as a future Decision #3.1 refinement (no code change required today; the resolver works). |
+| Maybe-add `SYNTHETIC_QUARTERS` | ~30 min spot-check + 20 min add if validated | New flat table; CTAS pattern. |
+
+**Total: ~1.5 hours to close all gaps from the JB seed side.**
+
+#### Decision framework for the next agent
+
+Add each only if the friend will actually query it:
+
+- **TEAMSTATISTICS**: add if the friend cares about game-narrative queries ("close games with lots of lead changes", "bench-heavy wins", "fast-break-driven offenses"). Add disclaimer that data freezes Jun 2023.
+- **COMMON_PLAYER_INFO**: add if the friend wants clean position strings (especially since ~30% of `players.position` is NULL) or wants the `GREATEST_75_FLAG` filter. Low risk, additive only.
+- **GAMES plural metadata**: add if the friend cares about playoff series context (game 7 of the Finals) or attendance pre-2023. Worth doing alongside any other refresh.
+- **PLAYERCODE investigation**: do this regardless — 5 minutes — to know if Decision #3's name-match resolver has a more elegant alternative for any future rebuild.
+- **SYNTHETIC_QUARTERS**: skip unless the friend specifically wants per-quarter advanced stats. The "synthetic" caveat means it's not production data.
+
+---
+
 ### Task #17 complete
 
 Decisions #2 and #3 are now fully closed:
