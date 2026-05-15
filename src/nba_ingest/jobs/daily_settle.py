@@ -46,11 +46,14 @@ from nba_ingest import snowflake_client
 from nba_ingest.fetchers.boxscore import fetch_boxscore
 from nba_ingest.fetchers.games import list_games_on_date
 from nba_ingest.flatteners.boxscore import (
+    flatten_game_inactives,
+    flatten_game_officials,
     flatten_game_row,
     flatten_line_score,
     flatten_player_box_advanced,
     flatten_player_box_basic,
 )
+from nba_ingest.resolvers.official_id import resolve_official_ids
 from nba_ingest.resolvers.player_id import resolve_player_ids
 
 logging.basicConfig(
@@ -303,6 +306,70 @@ WHEN NOT MATCHED THEN INSERT (
 """
 
 
+GAME_OFFICIALS_MERGE_SQL = """
+MERGE INTO ZK_NBA.FLAT.game_officials AS target
+USING (
+    SELECT
+        $1:game_id::STRING              AS game_id,
+        $1:official_id::STRING          AS official_id,
+        $1:br_official_slug::STRING     AS br_official_slug,
+        $1:first_name::STRING           AS first_name,
+        $1:last_name::STRING            AS last_name,
+        $1:jersey_num::INT              AS jersey_num,
+        $1:fetched_at::TIMESTAMP_NTZ    AS fetched_at
+    FROM {stage_file}
+    (FILE_FORMAT => 'ZK_NBA.RAW.JSON_FF')
+) AS src
+ON target.game_id = src.game_id AND target.official_id = src.official_id
+WHEN MATCHED THEN UPDATE SET
+    br_official_slug = src.br_official_slug,
+    first_name = src.first_name, last_name = src.last_name,
+    jersey_num = COALESCE(src.jersey_num, target.jersey_num),
+    fetched_at = src.fetched_at
+WHEN NOT MATCHED THEN INSERT (
+    game_id, official_id, br_official_slug, first_name, last_name, jersey_num, fetched_at
+) VALUES (
+    src.game_id, src.official_id, src.br_official_slug,
+    src.first_name, src.last_name, src.jersey_num, src.fetched_at
+)
+"""
+
+
+GAME_INACTIVES_MERGE_SQL = """
+MERGE INTO ZK_NBA.FLAT.game_inactives AS target
+USING (
+    SELECT
+        $1:game_id::STRING              AS game_id,
+        $1:player_id::STRING            AS player_id,
+        $1:br_player_slug::STRING       AS br_player_slug,
+        $1:first_name::STRING           AS first_name,
+        $1:last_name::STRING            AS last_name,
+        $1:jersey_num::INT              AS jersey_num,
+        $1:team_id::INT                 AS team_id,
+        $1:team_abbr::STRING            AS team_abbr,
+        $1:fetched_at::TIMESTAMP_NTZ    AS fetched_at
+    FROM {stage_file}
+    (FILE_FORMAT => 'ZK_NBA.RAW.JSON_FF')
+) AS src
+ON target.game_id = src.game_id AND target.player_id = src.player_id
+WHEN MATCHED THEN UPDATE SET
+    br_player_slug = src.br_player_slug,
+    first_name = src.first_name, last_name = src.last_name,
+    jersey_num = COALESCE(src.jersey_num, target.jersey_num),
+    team_id = COALESCE(src.team_id, target.team_id),
+    team_abbr = src.team_abbr,
+    fetched_at = src.fetched_at
+WHEN NOT MATCHED THEN INSERT (
+    game_id, player_id, br_player_slug, first_name, last_name,
+    jersey_num, team_id, team_abbr, fetched_at
+) VALUES (
+    src.game_id, src.player_id, src.br_player_slug,
+    src.first_name, src.last_name,
+    src.jersey_num, src.team_id, src.team_abbr, src.fetched_at
+)
+"""
+
+
 LINE_SCORES_MERGE_SQL = """
 MERGE INTO ZK_NBA.FLAT.line_scores AS target
 USING (
@@ -458,6 +525,27 @@ def _settle_game(slug: str, conn, tmpdir: Path) -> dict:
     line_row = flatten_line_score(slug, box.get("line_score"))
     line_rows = [line_row] if line_row else []
 
+    # Slice E: officials. BR meta gives us (name, br_slug) per ref.
+    # Official slugs use a different URL prefix than player slugs (/referees/
+    # vs /players/), so they need a separate resolver.
+    meta = box.get("meta", {})
+    officials_meta = meta.get("officials_with_slugs", [])
+    official_slug_to_nba = resolve_official_ids(conn, officials_meta)
+    official_rows = flatten_game_officials(slug, officials_meta, official_slug_to_nba)
+
+    # Slice F: inactives. Inactive players ARE players — their slugs are
+    # already in player_anchors from the boxscore HTML extraction, so
+    # slug_to_nba already covers them. No extra resolver call needed.
+    inactives_by_team = meta.get("inactives_by_team", {})
+    inactive_rows = flatten_game_inactives(slug, inactives_by_team, slug_to_nba)
+
+    logger.info(
+        "Flattened for %s: 1 game + %d basic + %d advanced + %d line_score "
+        "+ %d officials + %d inactives",
+        slug, len(player_rows), len(advanced_rows), len(line_rows),
+        len(official_rows), len(inactive_rows),
+    )
+
     g_ins, g_upd = _merge_rows(conn, [game_row], GAMES_MERGE_SQL, "games", slug, tmpdir)
     b_ins, b_upd = _merge_rows(conn, player_rows, PLAYER_BOX_BASIC_MERGE_SQL,
                                 "player_box_basic", slug, tmpdir)
@@ -465,6 +553,10 @@ def _settle_game(slug: str, conn, tmpdir: Path) -> dict:
                                 "player_box_advanced", slug, tmpdir)
     l_ins, l_upd = _merge_rows(conn, line_rows, LINE_SCORES_MERGE_SQL,
                                 "line_scores", slug, tmpdir)
+    o_ins, o_upd = _merge_rows(conn, official_rows, GAME_OFFICIALS_MERGE_SQL,
+                                "game_officials", slug, tmpdir)
+    i_ins, i_upd = _merge_rows(conn, inactive_rows, GAME_INACTIVES_MERGE_SQL,
+                                "game_inactives", slug, tmpdir)
 
     return {
         "game_id": slug,
@@ -472,10 +564,14 @@ def _settle_game(slug: str, conn, tmpdir: Path) -> dict:
         "player_count": len(player_rows),
         "advanced_count": len(advanced_rows),
         "line_score_count": len(line_rows),
+        "official_count": len(official_rows),
+        "inactive_count": len(inactive_rows),
         "games_inserted": g_ins, "games_updated": g_upd,
         "player_box_inserted": b_ins, "player_box_updated": b_upd,
         "player_box_advanced_inserted": a_ins, "player_box_advanced_updated": a_upd,
         "line_scores_inserted": l_ins, "line_scores_updated": l_upd,
+        "game_officials_inserted": o_ins, "game_officials_updated": o_upd,
+        "game_inactives_inserted": i_ins, "game_inactives_updated": i_upd,
     }
 
 
@@ -512,7 +608,10 @@ def settle_date(target_date: date) -> dict:
               "player_box_inserted": 0, "player_box_updated": 0,
               "player_box_advanced_inserted": 0, "player_box_advanced_updated": 0,
               "line_scores_inserted": 0, "line_scores_updated": 0,
-              "player_count": 0, "advanced_count": 0}
+              "game_officials_inserted": 0, "game_officials_updated": 0,
+              "game_inactives_inserted": 0, "game_inactives_updated": 0,
+              "player_count": 0, "advanced_count": 0,
+              "official_count": 0, "inactive_count": 0}
     settled = 0
     failed: list[tuple[str, str]] = []
 
@@ -535,12 +634,15 @@ def settle_date(target_date: date) -> dict:
 
     logger.info(
         "settle_date(%s) complete: %d/%d games settled "
-        "(games +%d/~%d, basic +%d/~%d, advanced +%d/~%d, line +%d/~%d)",
+        "(games +%d/~%d, basic +%d/~%d, advanced +%d/~%d, line +%d/~%d, "
+        "officials +%d/~%d, inactives +%d/~%d)",
         target_date, settled, len(slugs),
         totals["games_inserted"], totals["games_updated"],
         totals["player_box_inserted"], totals["player_box_updated"],
         totals["player_box_advanced_inserted"], totals["player_box_advanced_updated"],
         totals["line_scores_inserted"], totals["line_scores_updated"],
+        totals["game_officials_inserted"], totals["game_officials_updated"],
+        totals["game_inactives_inserted"], totals["game_inactives_updated"],
     )
     if failed:
         logger.warning("Failed slugs (%d): %s", len(failed), [s for s, _ in failed])

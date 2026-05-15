@@ -16,6 +16,8 @@ import pandas as pd
 import pytest
 
 from nba_ingest.flatteners.boxscore import (
+    flatten_game_inactives,
+    flatten_game_officials,
     flatten_game_row,
     flatten_line_score,
     flatten_player_box_advanced,
@@ -468,6 +470,92 @@ def test_flatten_game_row_returns_none_when_totals_missing():
     home_df_ok = _team_totals_df("MEM", PTS=87, FG=36, FGA=104)
     result = flatten_game_row("202404090MEM", "MEM", "SAS", no_totals_df, home_df_ok)
     assert result is None
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Tests: flatten_game_officials (Slice E)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def test_flatten_game_officials_basic():
+    """3 officials with name+slug + resolver map → 3 rows with NBA ids."""
+    officials = [
+        {"name": "Curtis Blair", "br_slug": "blaircu99r"},
+        {"name": "Robert Hussey", "br_slug": "hussero01r"},
+        {"name": "Tom Washington", "br_slug": "washito99r"},
+    ]
+    slug_to_nba = {"blaircu99r": "200832", "hussero01r": "1628480", "washito99r": "1199"}
+    rows = flatten_game_officials("202404090MEM", officials, slug_to_nba)
+    assert len(rows) == 3
+    assert rows[0]["game_id"] == "202404090MEM"
+    assert rows[0]["official_id"] == "200832"
+    assert rows[0]["first_name"] == "Curtis"
+    assert rows[0]["last_name"] == "Blair"
+    assert rows[0]["br_official_slug"] == "blaircu99r"
+
+
+def test_flatten_game_officials_unresolved_falls_back_to_slug():
+    """Officials whose slug isn't in the resolver map use the slug itself as id."""
+    officials = [{"name": "Brand New Ref", "br_slug": "newrebr01r"}]
+    rows = flatten_game_officials("202404090MEM", officials, {})
+    assert len(rows) == 1
+    assert rows[0]["official_id"] == "newrebr01r"  # slug fallback
+    assert rows[0]["br_official_slug"] == "newrebr01r"
+
+
+def test_flatten_game_officials_empty():
+    """Empty officials list returns empty list."""
+    assert flatten_game_officials("202404090MEM", [], {}) == []
+    assert flatten_game_officials("202404090MEM", None, {}) == []
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Tests: flatten_game_inactives (Slice F)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def test_flatten_game_inactives_multi_team():
+    """Multiple teams' inactives flatten with team_abbr preserved."""
+    inactives = {
+        "MEM": [
+            {"name": "Ja Morant", "br_slug": "moranja01"},
+            {"name": "Marcus Smart", "br_slug": "smartma01"},
+        ],
+        "SAS": [
+            {"name": "Devin Vassell", "br_slug": "vassede01"},
+        ],
+    }
+    slug_to_nba = {
+        "moranja01": "1629630",
+        "smartma01": "203935",
+        "vassede01": "1630170",
+    }
+    rows = flatten_game_inactives("202404090MEM", inactives, slug_to_nba)
+    assert len(rows) == 3
+    by_team = {r["team_abbr"]: r for r in rows}
+    assert by_team["MEM"]["player_id"] in ("1629630", "203935")
+    assert by_team["SAS"]["player_id"] == "1630170"
+    # Every row gets br_player_slug for diagnostic traceability
+    assert all(r["br_player_slug"] for r in rows)
+
+
+def test_flatten_game_inactives_unresolved_falls_back_to_slug():
+    """Unresolved slug → slug used as player_id."""
+    inactives = {"MEM": [{"name": "New Rookie", "br_slug": "rookine01"}]}
+    rows = flatten_game_inactives("202404090MEM", inactives, {})
+    assert len(rows) == 1
+    assert rows[0]["player_id"] == "rookine01"
+    assert rows[0]["br_player_slug"] == "rookine01"
+
+
+def test_flatten_game_inactives_empty():
+    assert flatten_game_inactives("202404090MEM", {}, {}) == []
+    assert flatten_game_inactives("202404090MEM", None, {}) == []
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Existing draft test continues below
+# ──────────────────────────────────────────────────────────────────────────────
 
 
 def test_flatten_draft_career_stats_nulls_for_no_stats():

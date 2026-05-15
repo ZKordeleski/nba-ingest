@@ -345,6 +345,88 @@ def flatten_four_factors(game_slug: str, df: pd.DataFrame) -> list[dict]:
     return rows
 
 
+def flatten_game_officials(
+    game_slug: str,
+    officials_with_slugs: list[dict],
+    slug_to_nba: dict[str, str],
+) -> list[dict]:
+    """Flatten BR officials meta into game_officials rows.
+
+    Args:
+        game_slug: BR game slug.
+        officials_with_slugs: List of {name, br_slug} from box["meta"]["officials_with_slugs"].
+        slug_to_nba: Output of resolvers.official_id.resolve_official_ids.
+
+    Returns:
+        List of dicts ready for MERGE into FLAT.game_officials. Splits each
+        name into first/last on the first whitespace.
+    """
+    rows = []
+    now = _now_utc()
+    for o in officials_with_slugs or []:
+        slug = o.get("br_slug")
+        name = o.get("name", "").strip()
+        if not slug or not name:
+            continue
+        official_id = slug_to_nba.get(slug, slug)  # slug is the fallback id
+        parts = name.split(None, 1)
+        first = parts[0] if parts else None
+        last = parts[1] if len(parts) > 1 else None
+        rows.append({
+            "game_id": game_slug,
+            "official_id": official_id,
+            "br_official_slug": slug,
+            "first_name": first,
+            "last_name": last,
+            "jersey_num": None,  # not in BR meta block
+            "fetched_at": now,
+        })
+    return rows
+
+
+def flatten_game_inactives(
+    game_slug: str,
+    inactives_by_team: dict[str, list[dict]],
+    slug_to_nba: dict[str, str],
+) -> list[dict]:
+    """Flatten BR inactives meta into game_inactives rows.
+
+    Args:
+        game_slug: BR game slug.
+        inactives_by_team: dict of {team_abbr: [{name, br_slug}, ...]} from
+            box["meta"]["inactives_by_team"].
+        slug_to_nba: Output of resolvers.player_id.resolve_player_ids — the
+            same map used for player_box rows. Inactives ARE players.
+
+    Returns:
+        List of dicts ready for MERGE into FLAT.game_inactives.
+    """
+    rows = []
+    now = _now_utc()
+    for team_abbr, players in (inactives_by_team or {}).items():
+        for p in players:
+            slug = p.get("br_slug")
+            name = p.get("name", "").strip()
+            if not slug or not name:
+                continue
+            player_id = slug_to_nba.get(slug, slug)  # slug fallback
+            parts = name.split(None, 1)
+            first = parts[0] if parts else None
+            last = parts[1] if len(parts) > 1 else None
+            rows.append({
+                "game_id": game_slug,
+                "player_id": player_id,
+                "br_player_slug": slug,
+                "first_name": first,
+                "last_name": last,
+                "jersey_num": None,
+                "team_id": None,
+                "team_abbr": team_abbr,
+                "fetched_at": now,
+            })
+    return rows
+
+
 def flatten_game_meta(game_slug: str, meta: dict) -> dict:
     """Package the page metadata into a structured dict.
 

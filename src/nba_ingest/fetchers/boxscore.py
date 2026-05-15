@@ -96,36 +96,82 @@ def _extract_player_anchors(html: str) -> dict[str, str]:
 
 
 def _parse_meta(html: str) -> dict:
-    """Extract officials, inactives, and attendance from page prose.
+    """Extract officials, inactives, attendance from page prose.
 
-    These are not in tables — they're in <div> elements with inline text.
-    Regex extraction is fragile; log warnings on failure rather than raising.
+    The returned dict has both legacy string keys (for backward compatibility)
+    and richer keys with BR slugs preserved for downstream resolver lookups.
 
-    Returns:
-        Dict with keys: officials (list[str]), inactives (list[str]), attendance (int|None).
+    Returns dict with keys:
+        officials: list[str]              — legacy: names only
+        officials_with_slugs: list[dict]  — [{name, br_slug}]
+        inactives: list[str]              — legacy: flat names list
+        inactives_by_team: dict[str, list[dict]]
+                                          — {team_abbr: [{name, br_slug}]}
+        attendance: int | None
     """
-    meta: dict = {"officials": [], "inactives": [], "attendance": None}
+    meta: dict = {
+        "officials": [],
+        "officials_with_slugs": [],
+        "inactives": [],
+        "inactives_by_team": {},
+        "attendance": None,
+    }
 
-    # Attendance: "Attendance: 19,812"
-    att_match = re.search(r"Attendance:\s*([\d,]+)", html)
+    # Attendance: "Attendance:&nbsp;</strong>16,108" — HTML entities break \s match
+    att_match = re.search(r"Attendance:[^\d]*?([\d,]+)", html)
     if att_match:
         try:
             meta["attendance"] = int(att_match.group(1).replace(",", ""))
         except ValueError:
             pass
 
-    # Officials: a comma-separated list of linked names after "Officials:"
-    # Extract all text anchors after the label.
-    officials_section = re.search(r"Officials:.*?(<a[^>]+>[^<]+</a>.*?)(?:</div>|</p>)", html, re.DOTALL)
-    if officials_section:
-        meta["officials"] = re.findall(r">([^<]+)</a>", officials_section.group(1))
+    # Officials block: <strong>Officials:</strong><a href='/referees/xxx.html'>Name</a>, <a ...>Name</a>...</div>
+    officials_block = re.search(
+        r"Officials:[^<]*</strong>(.*?)</div>",
+        html, re.DOTALL,
+    )
+    if officials_block:
+        block_html = officials_block.group(1)
+        # Capture anchor (slug, name) pairs in order
+        for m in re.finditer(
+            r"""<a\s+href=['"]/referees/([a-z0-9]+)\.html['"][^>]*>([^<]+)</a>""",
+            block_html, re.IGNORECASE,
+        ):
+            slug, name = m.group(1), m.group(2).strip()
+            meta["officials_with_slugs"].append({"name": name, "br_slug": slug})
+            meta["officials"].append(name)
 
-    # Inactive players: listed after team abbreviation labels
-    # Pattern: "Inactive: Name, Name, Name"
-    inactive_matches = re.findall(r"Inactive:\s*([^<\n]+)", html)
-    for match in inactive_matches:
-        names = [n.strip() for n in match.split(",") if n.strip()]
-        meta["inactives"].extend(names)
+    # Inactives block: <strong>Inactive:</strong><span><strong>TEAM</strong></span><a>...</a>...
+    # Structure: each team gets its own <strong>TEAM</strong></span> header followed by
+    # player anchor tags until the next team or end of div.
+    inactives_block = re.search(
+        r"Inactive[s]?:[^<]*</strong>(.*?)</div>",
+        html, re.DOTALL,
+    )
+    if inactives_block:
+        block_html = inactives_block.group(1)
+        # Split on team-header pattern: <span><strong>TEAM</strong></span>
+        # Each chunk after the first split is a (team, player_anchors_html) pair.
+        # Use a finditer over team headers and slice the html between them.
+        team_headers = list(re.finditer(
+            r"<strong>([A-Z]{2,4})</strong>",
+            block_html,
+        ))
+        for i, header in enumerate(team_headers):
+            team_abbr = header.group(1)
+            start = header.end()
+            end = team_headers[i + 1].start() if i + 1 < len(team_headers) else len(block_html)
+            chunk = block_html[start:end]
+            players_in_team: list[dict] = []
+            for m in re.finditer(
+                r"""<a\s+href=['"]/players/[a-z]/([a-z0-9]+)\.html['"][^>]*>([^<]+)</a>""",
+                chunk, re.IGNORECASE,
+            ):
+                slug, name = m.group(1), m.group(2).strip()
+                players_in_team.append({"name": name, "br_slug": slug})
+                meta["inactives"].append(name)
+            if players_in_team:
+                meta["inactives_by_team"][team_abbr] = players_in_team
 
     return meta
 

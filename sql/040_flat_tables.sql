@@ -206,10 +206,11 @@ COMMENT = 'Referee assignments per game. One row per official per game. Source: 
 -- --------------------------------------------------------------------------
 CREATE OR REPLACE TABLE ZK_NBA.FLAT.game_inactives (
     game_id              STRING  NOT NULL COMMENT 'Join to games.game_id.',
-    player_id            INT     NOT NULL COMMENT 'NBA player ID of the inactive player.',
+    player_id            STRING  NOT NULL COMMENT 'Canonical NBA Stats API player ID. JB seed: PLAYER_ID cast to STRING. BR scrape: resolved via DERIVED.player_xref (same resolver as player_box_basic). Was INT before decision #3.',
+    br_player_slug       STRING           COMMENT 'BR player slug. Populated for BR-scraped rows; diagnostic only.',
     first_name           STRING           COMMENT 'Player''s first name.',
     last_name            STRING           COMMENT 'Player''s last name.',
-    jersey_num           INT              COMMENT 'Player''s jersey number.',
+    jersey_num           INT              COMMENT 'Player''s jersey number. NULL for BR-scraped rows (not in meta block).',
     team_id              INT              COMMENT 'Team ID the player was rostered on for this game.',
     team_abbr            STRING           COMMENT 'Team abbreviation.',
     fetched_at           TIMESTAMP_NTZ    COMMENT 'Wall-clock time this row was written.',

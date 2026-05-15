@@ -20,7 +20,10 @@ INSERT INTO ZK_NBA.FLAT.game_inactives (
 )
 SELECT
     GAME_ID::STRING              AS game_id,
-    PLAYER_ID::INT               AS player_id,
+    -- player_id is now STRING (was INT) to accommodate BR slug fallbacks for
+    -- the rare unresolvable players. JB's NBA Stats API integer IDs get
+    -- stringified here so the column has a single uniform type.
+    PLAYER_ID::STRING            AS player_id,
     TRIM(FIRST_NAME)             AS first_name,
     TRIM(LAST_NAME)              AS last_name,
     JERSEY_NUM::INT              AS jersey_num,

@@ -349,6 +349,49 @@ Both are ~1-2 hours of work using the same patterns as Slices B-D / I.1. Unblock
 
 ---
 
+## Update: Slices E + F complete (2026-05-14, evening cont.)
+
+**All six FLAT tables now write atomically per `settle_one()` call:** games, player_box_basic, player_box_advanced, line_scores, **game_officials, game_inactives**. The full parity with the JB seed schema is achieved.
+
+### What landed in Slices E + F
+
+1. **`_parse_meta` extended** — now extracts (name, br_slug) pairs for officials and inactives instead of just names. Inactives are grouped by team via `<strong>TEAM</strong>` header parsing. Attendance regex also fixed (`&nbsp;` isn't `\s`).
+2. **`resolvers/official_id.py`** — two-tier resolver (no BR-fetch tier; BR ref pages don't have NBA.com links). Tier 1 by br_slug, tier 2 by name. Defensive slug fallback for unmatched refs.
+3. **`flatten_game_officials` + `flatten_game_inactives` flatteners** — pure functions that take meta dict + resolver output, emit rows for MERGE.
+4. **`GAME_OFFICIALS_MERGE_SQL` + `GAME_INACTIVES_MERGE_SQL` in daily_settle** — MERGE keyed on `(game_id, official_id)` and `(game_id, player_id)` respectively. Both keys use canonical NBA Stats API ids (resolved at write time).
+5. **DDL: `game_inactives.player_id` from INT → STRING** + new `br_player_slug` column. Same pattern as `player_box_basic`.
+6. **Inactives reuse the player_id resolver** — inactive players ARE players, their slugs are already in `box["player_anchors"]`. Zero new resolver code; the existing `slug_to_nba` map covers them.
+7. **6 new unit tests** — Slice E + F flatteners locked into the test suite.
+
+### End-to-end validation (game 202404090MEM)
+
+| Check | Got |
+|---|---|
+| **Officials inserted** | **3** (Curtis Blair `200832`, Robert Hussey `1628480`, Tom Washington `1199`) ✓ |
+| **Inactives inserted** | **15** (9 MEM + 6 SAS) — all with real NBA ids ✓ |
+| Officials resolved via tier-2 name match | 3/3 (no tier-3 needed, none would work) ✓ |
+| Inactives JOIN to JB player_box_basic via player_id | 15/15 joinable ✓ |
+| Officials JOIN to JB game_officials via official_id | 3/3 joinable ✓ |
+| **Ja Morant career via single `player_id='1629630'`** | **337 JB games** retrievable in one query ✓ |
+| Idempotency: 2nd run for game_officials | (0 inserted, 3 updated) ✓ |
+| Idempotency: 2nd run for game_inactives | (0 inserted, 15 updated) ✓ |
+
+### Notable real-data validations
+
+- **Tom Washington `official_id = 1199`** is a 4-digit ID — he's been an NBA ref since 1995, registered very early in the NBA Stats API's history. Long-tail historical IDs preserved correctly.
+- **The 9 MEM inactives are ALL their stars**: Bane, Jackson Jr., Morant, Smart, Rose, Watanabe. Data captures the late-season tank explicitly. The 12 who *played* were the deep bench (Goodwin, Pippen Jr., Clarke, etc.). 21 players total on the roster, 12 playing + 9 sitting = real-world reconciliation.
+- **39 unit tests pass** (6 new for Slices E/F).
+
+### Task #17 complete
+
+Decisions #2 and #3 are now fully closed:
+- **Decision #2** (officials/inactives schema): `official_id` STRING, `br_official_slug` column added. `game_inactives.player_id` STRING, `br_player_slug` column added.
+- **Decision #3** (real NBA player_ids for everyone): 3-tier resolver lives, tested against 2025-26 rookies and active stars alike.
+
+The friend can now query a unified database where every player_box, game_official, and game_inactive row uses canonical NBA Stats API IDs across the JB→BR seam. **There is no longer a reconciliation problem.**
+
+---
+
 ## Honest assessment: salvage, don't restart
 
 **The repo is ~70% solid and ~30% needs rewrite.** The foundation layers (SQL, fetchers, flatteners, client, tests) have been validated against real Snowflake and real BR data. The job layer (orchestration glue) is broken in ways that require a clean rewrite — but throwing out the validated foundation to start over would lose real work to avoid the messy 30% that needs rewrite anyway.
