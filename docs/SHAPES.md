@@ -160,7 +160,7 @@ Used for: arena, capacity, head coach, general roster info.
 | SAS | SAS |
 | GSW | GSW |
 
-Most abbreviations match. The BRK/BKN and CHO/CHA differences are the main gotchas.
+Most abbreviations match. **Three gotchas**: BRK/BKN, CHO/CHA, **PHO/PHX**. Empirically verified 2026-05-15 — these three are the only mismatches across all 30 current franchises. The team-id resolver in `daily_settle.py` handles them via CASE translation.
 
 ---
 

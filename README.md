@@ -4,10 +4,14 @@ Pipeline that pumps NBA stats from Basketball-Reference into Snowflake. Powers c
 
 ## Current status
 
-- **Slice 0 — JB_HISTORIC_NBA validation.** Source DB surveyed and validated: 14 tables confirmed, row counts and date ranges documented, column schemas mapped. Ready to seed.
-- **Slice 1 — Bootstrap + JB seed.** Pending. Will create `ZK_NBA` + all FLAT tables and run the 11 seed CTASs from `JB_HISTORIC_NBA.PUBLIC`.
+**Production. Daily cron live (8:30 UTC) since 2026-05-15.** Data spans 1946-11-01 to present (~1.6M player-game rows, ~70K games, ~83K official assignments).
 
-See [`docs/plan.md`](docs/plan.md) for the full slice breakdown.
+Source boundary (post-2026-05-15 canonical swap):
+- **Pre-2023-24 season**: `jb_seed` — sourced from `JB_HISTORIC_NBA.PUBLIC` (NBA Stats API snapshot). NBA Stats numeric game_id format (e.g. `42200405`).
+- **2023-24 season onward**: `br_scrape` — sourced from Basketball-Reference daily scraping. BR URL slug game_id format (e.g. `202405190DEN`).
+- Clean cut at 2023-06-12 (end of 2022-23 NBA Finals). No same-game duplication; joins work within each era.
+
+Slices A-I.1 complete. See [`HANDOFF.md`](HANDOFF.md) for the full session log and [`docs/plan.md`](docs/plan.md) for the original slice breakdown.
 
 ## Architecture
 
@@ -76,7 +80,9 @@ sql/
   001_bootstrap.sql              Database (ZK_NBA), schemas, warehouse
   020_raw_tables.sql             ZK_NBA.RAW.* (VARIANT payloads)
   040_flat_tables.sql            ZK_NBA.FLAT.* (flattened relational, column comments)
-  050_seed_from_jb/              CTAS scripts: JB_HISTORIC_NBA → ZK_NBA.FLAT (one-time)
+  050_seed_from_jb/              JB → FLAT seed scripts. Use DELETE WHERE source='jb_seed'
+                                 (not TRUNCATE) for multi-source tables so BR rows survive
+                                 a re-seed. Run in order on first bootstrap.
     001_player_box.sql           UNION of PLAYERSTATISTICS1 + PLAYERSTATISTICS2
     002_games.sql                GAME (wide format → flat games)
     003_line_scores.sql          LINE_SCORE
@@ -88,7 +94,11 @@ sql/
     009_draft_combine.sql        DRAFT_COMBINE_STATS → draft_combine
     010_team_history.sql         TEAMHISTORIES → team_history
     011_play_by_play.sql         PLAY_BY_PLAY_PART001 UNION PLAY_BY_PLAY_PART002
+  060_xref_setup.sql             ZK_NBA.DERIVED.player_xref + official_xref
+  070_derived_views/             ZK_NBA.DERIVED.* views computed at query time
+    001_vw_team_box.sql          Team-level box stats (SUM player_box_basic GROUP BY team)
   090_validation/                Per-slice validation queries
+  100_comment_refresh.sql        ALTER ... COMMENT updates for live DB (run once after fixes)
     001_row_counts.sql
     002_date_ranges.sql
     003_spot_checks.sql

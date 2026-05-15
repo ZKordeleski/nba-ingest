@@ -19,12 +19,12 @@ CREATE OR REPLACE TABLE ZK_NBA.FLAT.games (
     game_id              STRING  NOT NULL COMMENT 'NBA game ID (e.g. 42200405). String to preserve leading zeros if any.',
     game_date            DATE    NOT NULL COMMENT 'Calendar date the game was played.',
     season               INT              COMMENT 'Season end year (e.g. 2023 for 2022-23 season).',
-    season_id            INT              COMMENT 'JB season_id code (e.g. 22022 for 2022-23 regular season).',
+    season_id            INT              COMMENT 'NBA season-type-prefixed season code. JB: from GAME.SEASON_ID (22022 = 2022-23 regular, 42022 = playoffs). BR: derived as <first digit of game_id> || LPAD(season-1, 4, ''0'') — same format.',
     season_type          STRING           COMMENT 'Regular Season | Playoffs | Play In | Preseason',
-    home_team_id         INT              COMMENT 'NBA team ID for the home team.',
-    home_team_abbr       STRING           COMMENT 'Home team abbreviation (NBA style, e.g. DEN).',
-    away_team_id         INT              COMMENT 'NBA team ID for the away team.',
-    away_team_abbr       STRING           COMMENT 'Away team abbreviation (NBA style, e.g. MIA).',
+    home_team_id         INT              COMMENT 'NBA Stats API team ID for the home team. JB: from GAME.TEAM_ID_HOME directly. BR: resolved post-MERGE from home_team_abbr via FLAT.teams lookup with BR->NBA translation (BRK->BKN, CHO->CHA, PHO->PHX).',
+    home_team_abbr       STRING           COMMENT 'Home team abbreviation. JB: NBA style (DEN, BKN, CHA, PHX). BR: BR style (DEN, BRK, CHO, PHO). Use team_id for cross-source joins; team_abbr is display-only.',
+    away_team_id         INT              COMMENT 'NBA Stats API team ID for the away team. Same resolution path as home_team_id.',
+    away_team_abbr       STRING           COMMENT 'Away team abbreviation. Source-flavored same as home_team_abbr.',
     home_pts             INT              COMMENT 'Home team final score.',
     away_pts             INT              COMMENT 'Away team final score.',
     home_wl              STRING           COMMENT 'W or L from home team perspective.',
@@ -45,7 +45,7 @@ CREATE OR REPLACE TABLE ZK_NBA.FLAT.games (
     home_blk             INT              COMMENT 'Home blocks.',
     home_tov             INT              COMMENT 'Home turnovers.',
     home_pf              INT              COMMENT 'Home personal fouls.',
-    home_plus_minus      INT              COMMENT 'Home plus/minus (always 0 for JB seed; available from BR).',
+    home_plus_minus      INT              COMMENT 'Home team plus/minus. JB: from GAME.PLUS_MINUS_HOME (NBA Stats API authoritative, may be 0 for legacy games). BR: derived as home_pts - away_pts.',
     away_fgm             INT              COMMENT 'Away field goals made.',
     away_fga             INT              COMMENT 'Away field goals attempted.',
     away_fg_pct          FLOAT            COMMENT 'Away field goal percentage.',
@@ -63,13 +63,13 @@ CREATE OR REPLACE TABLE ZK_NBA.FLAT.games (
     away_blk             INT              COMMENT 'Away blocks.',
     away_tov             INT              COMMENT 'Away turnovers.',
     away_pf              INT              COMMENT 'Away personal fouls.',
-    away_plus_minus      INT              COMMENT 'Away plus/minus.',
+    away_plus_minus      INT              COMMENT 'Away team plus/minus. JB: NBA Stats API value. BR: derived as away_pts - home_pts.',
     source               STRING           COMMENT 'jb_seed | br_scrape — which pipeline wrote this row.',
     fetched_at           TIMESTAMP_NTZ    COMMENT 'Wall-clock time this row was written.',
 
     PRIMARY KEY (game_id)
 )
-COMMENT = 'One row per game. Wide format: both teams stats in one row. Source: JB seed (1946-Jun 2023) + BR scrape (2023-present). Join to player_box_basic on game_id for player-level stats.';
+COMMENT = 'One row per game. Wide format: both teams stats in one row. Source boundary: jb_seed covers 1946-Nov through 2023-Jun-12 (end of 2022-23 NBA season); br_scrape covers 2023-Oct onward. No overlap. game_id format differs by source: JB uses NBA Stats API numeric (e.g. 42200405); BR uses URL slug (e.g. 202405190DEN). Join to player_box_basic on game_id works within an era because both sides use the canonical source per era.';
 
 -- --------------------------------------------------------------------------
 -- player_box_basic
@@ -81,16 +81,16 @@ CREATE OR REPLACE TABLE ZK_NBA.FLAT.player_box_basic (
     player_id            STRING  NOT NULL COMMENT 'Canonical NBA Stats API player ID. JB seed: PERSONID directly. BR scrape: resolved from BR slug via DERIVED.player_xref (name match against JB seed, fallback fetch of BR player page external link to stats.nba.com).',
     player_name          STRING           COMMENT 'Full player name (first + last). May have diacritics from BR (Jokić), ASCII from JB (Jokic).',
     br_player_slug       STRING           COMMENT 'BR player slug (e.g., wembavi01). Populated for source=br_scrape rows; NULL for JB seed. Diagnostic only — use player_id for joins.',
-    team_id              INT              COMMENT 'Player''s team ID for this game.',
-    team_name            STRING           COMMENT 'Player''s team name (city + nickname).',
-    team_abbr            STRING           COMMENT 'Player''s team abbreviation.',
-    opponent_team_name   STRING           COMMENT 'Opponent team name.',
+    team_id              INT              COMMENT 'NBA Stats API team ID for the player''s team this game. JB seed: resolved via JOIN to FLAT.team_history on (city || '' '' || nickname) with date-range filter (handles historical renames). BR scrape: resolved post-MERGE from team_abbr via FLAT.teams with BR->NBA translation. ~1.65% NULL on pre-1965 BAA/defunct franchises (Syracuse Nationals, etc.) where team_history doesn''t extend.',
+    team_name            STRING           COMMENT 'Player''s team full name (city + nickname). JB seed: PLAYERTEAMCITY || '' '' || PLAYERTEAMNAME (historical names possible). BR scrape: FLAT.teams.full_name lookup (always current franchise name).',
+    team_abbr            STRING           COMMENT 'Player''s team abbreviation. JB: NBA style (DEN, BKN, etc.). BR: BR style (DEN, BRK, etc.). Display-only — use team_id for cross-source joins.',
+    opponent_team_name   STRING           COMMENT 'Opposing team full name. JB: OPPONENTTEAMCITY || '' '' || OPPONENTTEAMNAME. BR: derived post-MERGE by joining games on game_id and picking the OTHER team.',
     game_date            DATE             COMMENT 'Calendar date of the game.',
-    season               INT              COMMENT 'Season end year.',
-    game_type            STRING           COMMENT 'Regular Season | Playoffs | Play In | Preseason',
+    season               INT              COMMENT 'NBA season end year (e.g. 2023 = 2022-23 season). Derived: MONTH(game_date) >= 10 ? YEAR+1 : YEAR. Boundary: jb_seed has season <= 2023; br_scrape has season >= 2024.',
+    game_type            STRING           COMMENT 'One of: Regular Season, Playoffs, Play-in Tournament, NBA Cup, NBA Emirates Cup, Preseason. JB: from GAMETYPE directly. BR: derived from first digit of game_id (2=Regular, 4=Playoffs, 5=Play-in, 6=NBA Cup, 0/1=Preseason).',
     is_win               BOOLEAN          COMMENT 'True if the player''s team won this game.',
     is_home              BOOLEAN          COMMENT 'True if the player''s team was the home team.',
-    minutes_played       FLOAT            COMMENT 'Minutes played. Null or 0 if player was active but did not play (DNP).',
+    minutes_played       FLOAT            COMMENT 'Minutes played as INT (rounded from NBA''s MM:SS internal format). DNP: NULL or 0. Sum over a team for regulation is typically 235-240 (rounding loss across 5 players), not exactly 240.',
     pts                  INT              COMMENT 'Points scored.',
     ast                  INT              COMMENT 'Assists.',
     reb                  INT              COMMENT 'Total rebounds.',
@@ -115,7 +115,7 @@ CREATE OR REPLACE TABLE ZK_NBA.FLAT.player_box_basic (
 
     PRIMARY KEY (game_id, player_id)
 )
-COMMENT = 'One row per player per game. Basic box score stats. Source: JB PLAYERSTATISTICS1+2 union (1946-Apr 2025) + BR (ongoing). For advanced stats, join to player_box_advanced on (game_id, player_id).';
+COMMENT = 'One row per player per game. Basic box score stats. Source boundary: season <= 2023 = jb_seed; season >= 2024 = br_scrape. No same-game duplication. For team-level totals use DERIVED.vw_team_box. For advanced stats, join to player_box_advanced on (game_id, player_id).';
 
 -- --------------------------------------------------------------------------
 -- player_box_advanced
@@ -211,7 +211,7 @@ CREATE OR REPLACE TABLE ZK_NBA.FLAT.game_inactives (
     first_name           STRING           COMMENT 'Player''s first name.',
     last_name            STRING           COMMENT 'Player''s last name.',
     jersey_num           INT              COMMENT 'Player''s jersey number. NULL for BR-scraped rows (not in meta block).',
-    team_id              INT              COMMENT 'Team ID the player was rostered on for this game.',
+    team_id              INT              COMMENT 'NBA Stats API team ID the player was rostered on. JB: from INACTIVE_PLAYERS.TEAM_ID. BR: resolved post-MERGE from team_abbr via FLAT.teams lookup with BR->NBA translation.',
     team_abbr            STRING           COMMENT 'Team abbreviation.',
     fetched_at           TIMESTAMP_NTZ    COMMENT 'Wall-clock time this row was written.',
 

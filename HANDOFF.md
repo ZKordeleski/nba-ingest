@@ -415,6 +415,18 @@ Healthy tables (confirmed): `player_box_advanced`, `line_scores`, `game_official
 - **Task #24**: patch the remaining `sql/050_seed_from_jb/*.sql` seed files to use `DELETE WHERE source='jb_seed'` instead of `TRUNCATE`. Same footgun pattern exists in `002_games.sql`, `003_line_scores.sql`, `004_officials.sql`, `008_inactive.sql`.
 - **Task #25**: integrate the team-id resolution lookup into `daily_settle.py` (post-MERGE UPDATE step using the same abbr→team_id pattern). Without this, tomorrow's cron run will write NEW BR rows with NULL team_id and we'll have to re-run the backfill periodically.
 
+#### Update later that day: BR-canonical swap for season >= 2024
+Discovered that JB's `GAME` table cuts off at 2023-06-12 while JB's `PLAYERSTATISTICS1/2` extends to 2025-04-06 — so JB player_box rows for 2023-24+ had orphan game_ids that didn't join to `games`. Plus BR's URL-slug game_ids and JB's NBA-Stats numeric game_ids meant the same physical game appeared as two rows under different keys.
+
+Resolution: pick a clean source boundary at 2023-06-12.
+- `season <= 2023` (NBA seasons ending Jun-2023 and earlier): `jb_seed` exclusively, NBA Stats numeric game_id.
+- `season >= 2024` (NBA seasons starting Oct-2023): `br_scrape` exclusively, BR URL-slug game_id.
+- No overlap. No same-game duplication. 100% cross-table join success within each era.
+
+Verified: `Jokic 2024 = 91 games`, `2025 = 84`, `2026 = 71` (current playoffs). `Wembanyama 2025 = 46` games (matches real DVT-affected season).
+
+Trade-off accepted: BR's `season_id`, `game_type`, and `plus_minus` for 2023-24+ are derived rather than NBA-Stats-API authoritative. Derivations spot-checked against known games — values match.
+
 #### The view (`ZK_NBA.DERIVED.vw_team_box`)
 Live and parity-verified. One row per team per game. Computed at query time via `SUM(...) GROUP BY (game_id, team_id)` over `player_box_basic`. Use this for any team-level query — DO NOT add a redundant aggregate table.
 
