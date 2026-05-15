@@ -1,9 +1,11 @@
 name: Daily Settle
 
 on:
-  # schedule:
-  #   - cron: '30 8 * * *'  # 8:30 UTC = ~3:30am ET. All games (including late West Coast) are final by then.
-  #   Enable after manual dispatch validation (see docs/SETUP.md §10).
+  schedule:
+    # 8:30 UTC = ~3:30am ET. All games (including late West Coast) are final
+    # by then. Enabled 2026-05-15 after canary validation in run 25897063358
+    # (10m18s green, 14 games settled for 2024-04-09).
+    - cron: '30 8 * * *'
   workflow_dispatch:
     inputs:
       settle_date:
