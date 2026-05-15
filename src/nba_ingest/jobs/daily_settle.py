@@ -434,6 +434,131 @@ WHEN NOT MATCHED THEN INSERT (
 """
 
 
+# --------------------------------------------------------------------------
+# Post-MERGE team-id resolution.
+#
+# BR scrapes don't write team_id directly because BR boxscores only expose
+# team abbreviations (and they use BR-style abbrs: BRK/CHO/PHO instead of
+# NBA-style BKN/CHA/PHX). The flatteners stage team_abbr; these UPDATEs
+# resolve team_id and the dependent fields (team_name, opponent_team_name,
+# season, game_type, season_id, plus_minus) after the MERGE inserts.
+#
+# Each UPDATE is idempotent: rows where the target columns are already
+# populated end up with the same values, so re-running on an already-settled
+# game is a no-op. The same logic was used in dev/_backfill_br_team_ids.sql
+# to fix the existing 100% NULL state on 2026-05-15.
+# --------------------------------------------------------------------------
+
+RESOLVE_GAMES_SQL = """
+UPDATE ZK_NBA.FLAT.games g
+SET
+    home_team_id     = nba_home.team_id,
+    away_team_id     = nba_away.team_id,
+    season_id        = TRY_TO_NUMBER(LEFT(g.game_id, 1) || LPAD((g.season - 1)::STRING, 4, '0')),
+    home_plus_minus  = g.home_pts - g.away_pts,
+    away_plus_minus  = g.away_pts - g.home_pts
+FROM ZK_NBA.FLAT.teams nba_home, ZK_NBA.FLAT.teams nba_away
+WHERE
+    g.game_id = %s
+    AND g.source = 'br_scrape'
+    AND nba_home.abbreviation = CASE g.home_team_abbr
+                                  WHEN 'BRK' THEN 'BKN'
+                                  WHEN 'CHO' THEN 'CHA'
+                                  WHEN 'PHO' THEN 'PHX'
+                                  ELSE g.home_team_abbr
+                                END
+    AND nba_away.abbreviation = CASE g.away_team_abbr
+                                  WHEN 'BRK' THEN 'BKN'
+                                  WHEN 'CHO' THEN 'CHA'
+                                  WHEN 'PHO' THEN 'PHX'
+                                  ELSE g.away_team_abbr
+                                END
+"""
+
+RESOLVE_PLAYER_BOX_SQL = """
+UPDATE ZK_NBA.FLAT.player_box_basic pbb
+SET
+    team_id   = nba_team.team_id,
+    team_name = nba_team.full_name,
+    season    = CASE WHEN MONTH(pbb.game_date) >= 10
+                     THEN YEAR(pbb.game_date) + 1
+                     ELSE YEAR(pbb.game_date)
+                END,
+    game_type = CASE LEFT(pbb.game_id, 1)
+                  WHEN '0' THEN 'Preseason'
+                  WHEN '1' THEN 'Preseason'
+                  WHEN '2' THEN 'Regular Season'
+                  WHEN '4' THEN 'Playoffs'
+                  WHEN '5' THEN 'Play-in Tournament'
+                  WHEN '6' THEN 'NBA Cup'
+                  ELSE NULL
+                END
+FROM ZK_NBA.FLAT.teams nba_team
+WHERE
+    pbb.game_id = %s
+    AND pbb.source = 'br_scrape'
+    AND nba_team.abbreviation = CASE pbb.team_abbr
+                                  WHEN 'BRK' THEN 'BKN'
+                                  WHEN 'CHO' THEN 'CHA'
+                                  WHEN 'PHO' THEN 'PHX'
+                                  ELSE pbb.team_abbr
+                                END
+"""
+
+# Must run AFTER RESOLVE_PLAYER_BOX_SQL (depends on pbb.team_id) and AFTER
+# RESOLVE_GAMES_SQL (depends on games.home/away_team_id).
+RESOLVE_OPPONENT_NAMES_SQL = """
+UPDATE ZK_NBA.FLAT.player_box_basic pbb
+SET opponent_team_name = nba_opp.full_name
+FROM ZK_NBA.FLAT.games g, ZK_NBA.FLAT.teams nba_opp
+WHERE
+    pbb.game_id = %s
+    AND pbb.source = 'br_scrape'
+    AND g.game_id = pbb.game_id
+    AND nba_opp.team_id = CASE
+                            WHEN g.home_team_id = pbb.team_id THEN g.away_team_id
+                            WHEN g.away_team_id = pbb.team_id THEN g.home_team_id
+                            ELSE NULL
+                          END
+"""
+
+RESOLVE_GAME_INACTIVES_SQL = """
+UPDATE ZK_NBA.FLAT.game_inactives gi
+SET team_id = nba_team.team_id
+FROM ZK_NBA.FLAT.teams nba_team
+WHERE
+    gi.game_id = %s
+    AND gi.br_player_slug IS NOT NULL
+    AND nba_team.abbreviation = CASE gi.team_abbr
+                                  WHEN 'BRK' THEN 'BKN'
+                                  WHEN 'CHO' THEN 'CHA'
+                                  WHEN 'PHO' THEN 'PHX'
+                                  ELSE gi.team_abbr
+                                END
+"""
+
+
+def _resolve_team_ids_for_game(conn, slug: str) -> None:
+    """Resolve team_id and related fields on the rows just MERGEd for this game.
+
+    Order matters: games first (RESOLVE_GAMES_SQL), then player_box team_id
+    (RESOLVE_PLAYER_BOX_SQL), then opponent_team_name (depends on both prior
+    updates), then game_inactives.
+    """
+    cur = conn.cursor()
+    try:
+        for label, sql in [
+            ("games", RESOLVE_GAMES_SQL),
+            ("player_box_basic", RESOLVE_PLAYER_BOX_SQL),
+            ("player_box_basic_opponent", RESOLVE_OPPONENT_NAMES_SQL),
+            ("game_inactives", RESOLVE_GAME_INACTIVES_SQL),
+        ]:
+            cur.execute(sql, (slug,))
+            logger.info("[%s] resolve_team_ids: %d rows updated", label, cur.rowcount)
+    finally:
+        cur.close()
+
+
 def _write_ndjson(records: list[dict], path: Path) -> None:
     with path.open("w") as f:
         for record in records:
@@ -557,6 +682,11 @@ def _settle_game(slug: str, conn, tmpdir: Path) -> dict:
                                 "game_officials", slug, tmpdir)
     i_ins, i_upd = _merge_rows(conn, inactive_rows, GAME_INACTIVES_MERGE_SQL,
                                 "game_inactives", slug, tmpdir)
+
+    # Post-MERGE: resolve team_id and dependent fields on the rows just written.
+    # BR scrapes only stage team_abbr; team_id comes from a teams-table lookup
+    # with BR->NBA abbreviation translation (BRK->BKN, CHO->CHA, PHO->PHX).
+    _resolve_team_ids_for_game(conn, slug)
 
     return {
         "game_id": slug,

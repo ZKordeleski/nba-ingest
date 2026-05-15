@@ -16,7 +16,10 @@ USE ROLE DEVELOPER_ADMIN;
 USE DATABASE ZK_NBA;
 USE WAREHOUSE NBA_INGEST_WH;
 
-TRUNCATE TABLE ZK_NBA.FLAT.game_officials;
+-- DELETE (not TRUNCATE) so BR-scraped rows survive a re-seed. game_officials
+-- has no explicit source column, so we infer JB rows via br_official_slug IS NULL.
+-- See 001_player_box.sql for the full rationale.
+DELETE FROM ZK_NBA.FLAT.game_officials WHERE br_official_slug IS NULL;
 
 INSERT INTO ZK_NBA.FLAT.game_officials (
     game_id, official_id, first_name, last_name, jersey_num, fetched_at

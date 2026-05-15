@@ -23,7 +23,8 @@ USE ROLE DEVELOPER_ADMIN;
 USE DATABASE ZK_NBA;
 USE WAREHOUSE NBA_INGEST_WH;
 
-TRUNCATE TABLE ZK_NBA.FLAT.line_scores;
+-- DELETE (not TRUNCATE) so BR-scraped rows survive a re-seed. See 001_player_box.sql.
+DELETE FROM ZK_NBA.FLAT.line_scores WHERE source = 'jb_seed';
 
 INSERT INTO ZK_NBA.FLAT.line_scores (
     game_id, game_date,

@@ -22,7 +22,10 @@ USE ROLE DEVELOPER_ADMIN;
 USE DATABASE ZK_NBA;
 USE WAREHOUSE NBA_INGEST_WH;
 
-TRUNCATE TABLE ZK_NBA.FLAT.games;
+-- DELETE (not TRUNCATE) so BR-scraped rows survive a re-seed. See 001_player_box.sql
+-- for the full rationale — same TRUNCATE footgun applies to any table written by
+-- both pipelines.
+DELETE FROM ZK_NBA.FLAT.games WHERE source = 'jb_seed';
 
 INSERT INTO ZK_NBA.FLAT.games (
     game_id, game_date, season, season_id, season_type,

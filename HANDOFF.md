@@ -382,6 +382,50 @@ Both are ~1-2 hours of work using the same patterns as Slices B-D / I.1. Unblock
 - **The 9 MEM inactives are ALL their stars**: Bane, Jackson Jr., Morant, Smart, Rose, Watanabe. Data captures the late-season tank explicitly. The 12 who *played* were the deep bench (Goodwin, Pippen Jr., Clarke, etc.). 21 players total on the roster, 12 playing + 9 sitting = real-world reconciliation.
 - **39 unit tests pass** (6 new for Slices E/F).
 
+### Update: Data-quality audit + team_id fix (2026-05-15, later in the day)
+
+While investigating Gap 1, we built `DERIVED.vw_team_box` and ran a parity check against `TEAMSTATISTICS`. The check failed in a surprising way — uncovering a much bigger issue than the gaps.
+
+#### Bug discovered
+**`FLAT.player_box_basic.team_id` was 100% NULL** across both pipelines (jb_seed AND br_scrape). Every team-level query off this table was producing collapsed-both-teams-into-one-row results. The bug was invisible because the column existed and was queryable — only the values were absent.
+
+Audit revealed a wider footprint of the same class of bug (all "deliberately NULL'd" or "never resolved at write time"):
+
+| Table | Source | Columns 100% NULL |
+|---|---|---|
+| `player_box_basic` | jb_seed | `team_id`, `team_abbr`, `season` |
+| `player_box_basic` | br_scrape | `team_id`, `team_name`, `opponent_team_name`, `season`, `game_type` |
+| `games` | br_scrape | `home_team_id`, `away_team_id`, `season_id`, `home_plus_minus`, `away_plus_minus` |
+| `game_inactives` | br_scrape | `team_id` |
+
+Healthy tables (confirmed): `player_box_advanced`, `line_scores`, `game_officials`, `players` (real historical sparsity, not a bug), `teams`, `team_history`.
+
+#### Fix applied
+1. **JB seed** (`sql/050_seed_from_jb/001_player_box.sql`): rewrote to resolve team_id via JOIN to `FLAT.team_history` on (`city || ' ' || nickname`) with date-range filter, plus look up team_abbr from `FLAT.teams`, plus derive season from game_date. Result: **1.65% NULL** (down from 100%) — remaining cases are pre-1965 BAA/defunct franchises that team_history doesn't cover.
+2. **JB seed pattern fix**: changed `TRUNCATE` to `DELETE WHERE source='jb_seed'` so the seed no longer wipes BR rows as collateral damage. (Learned this the hard way mid-fix — recovered the BR rows via Snowflake time-travel.)
+3. **BR backfill** (`dev/_backfill_br_team_ids.sql`): one-shot UPDATE on existing 104K+3,940+33,658 rows. Resolves team_id from `team_abbr` with BR→NBA abbreviation translation (BRK→BKN, CHO→CHA, PHO→PHX); derives `season`, `game_type`, `opponent_team_name`, `home/away_plus_minus` and `season_id`. Result: **0.0% NULL** across all fixed columns.
+
+#### Parity-check outcome
+- Finals Game 5 (DEN @ MIA, 2023-06-12): all 14 standard team stats match `TEAMSTATISTICS` exactly.
+- Two expected diffs documented:
+  - **TOV off by 1 (~25% of 911-game sample)**: NBA distinguishes player-attributed turnovers from "team turnovers" (shot-clock violations, etc.). Our SUM only captures player-attributed; `TEAMSTATISTICS` sums both. Known basketball-stats edge case, not a bug.
+  - **Minutes off by 3-4 (~57% of sample)**: `minutes_played` is stored as INT (rounded down). 5 players × ~0.5 min rounding ≈ ~2-3 min off vs. JB's 240 official figure. Tracked as future enhancement; non-blocking.
+
+#### Still open (tasks logged in session)
+- **Task #24**: patch the remaining `sql/050_seed_from_jb/*.sql` seed files to use `DELETE WHERE source='jb_seed'` instead of `TRUNCATE`. Same footgun pattern exists in `002_games.sql`, `003_line_scores.sql`, `004_officials.sql`, `008_inactive.sql`.
+- **Task #25**: integrate the team-id resolution lookup into `daily_settle.py` (post-MERGE UPDATE step using the same abbr→team_id pattern). Without this, tomorrow's cron run will write NEW BR rows with NULL team_id and we'll have to re-run the backfill periodically.
+
+#### The view (`ZK_NBA.DERIVED.vw_team_box`)
+Live and parity-verified. One row per team per game. Computed at query time via `SUM(...) GROUP BY (game_id, team_id)` over `player_box_basic`. Use this for any team-level query — DO NOT add a redundant aggregate table.
+
+```sql
+SELECT * FROM ZK_NBA.DERIVED.vw_team_box
+WHERE team_id = 1610612743 AND season = 2026
+ORDER BY game_date DESC;  -- "Nuggets games this season"
+```
+
+---
+
 ### Update: JB source coverage analysis (2026-05-15)
 
 We use 11 of the 24 tables in `JB_HISTORIC_NBA`. Documented here for the next agent to assess whether any unused tables justify additional FLAT tables.
@@ -400,26 +444,20 @@ We use 11 of the 24 tables in `JB_HISTORIC_NBA`. Documented here for the next ag
 
 #### Three meaningful gaps the next agent should evaluate
 
-##### Gap 1: `TEAMSTATISTICS` (143,464 rows) — narrative team stats
-**Most material gap.** Team-game grain (71,732 games × 2 teams). Has columns nowhere else in our FLAT or in BR scrapes:
+##### ~~Gap 1: `TEAMSTATISTICS` — narrative team stats~~  *(PHANTOM — empirically disproven 2026-05-15)*
 
-| Column | What it tells us |
-|---|---|
-| `BENCHPOINTS` | Bench scoring per team per game |
-| `BIGGESTLEAD` | Peak point margin |
-| `BIGGESTSCORINGRUN` | Longest scoring streak |
-| `LEADCHANGES`, `TIMESTIED` | Game-flow / drama metrics |
-| `POINTSFASTBREAK` | Transition scoring |
-| `POINTSINTHEPAINT` | Interior scoring |
-| `POINTSSECONDCHANCE` | Off offensive rebounds |
-| `POINTSFROMTURNOVERS` | Scoring off forced turnovers |
-| `COACHID` | Who was coaching |
-| `SEASONWINS`, `SEASONLOSSES` | Team record at game time |
-| `TIMEOUTSREMAINING` | End-of-game state |
+Originally framed as the "most material gap." Empirical check showed it's not real:
 
-Coverage: modern era only (likely late-1990s onward when NBA Stats API started recording these).
+| Column | Rows populated (of 143,464) | % |
+|---|---|---|
+| `BENCHPOINTS`, `BIGGESTLEAD`, `LEADCHANGES`, `POINTSINTHEPAINT`, etc. | 2,460 | **1.7%** |
+| `COACHID` | **0** | **0.0%** |
 
-**Critical limitation if added:** BR's HTML doesn't expose these fields. So a `FLAT.team_box_stats` table sourced from `TEAMSTATISTICS` would freeze at JB's June 2023 cutoff. Daily BR scrapes can't extend it forward. Honest disclosure required when shipping.
+Only ~1,230 games (out of 71,732) have any narrative stats populated, spanning a non-contiguous window 2007-10-19 → 2025-04-06. `COACHID` is completely empty across the entire table. The columns *exist* on `DESCRIBE` but the values are essentially absent.
+
+**Action taken:** removed from the gap list. Standard team-level stats (PTS/REB/AST/etc.) are derivable from `FLAT.player_box_basic` via `ZK_NBA.DERIVED.vw_team_box` (added 2026-05-15) — no aggregate table needed.
+
+**Lesson:** always verify column *population*, not just *existence*, before scoping enrichment work. A 9-character column name like `POINTSINTHEPAINT` is a tantalizing lie if it's 98% NULL.
 
 ##### Gap 2: `COMMON_PLAYER_INFO` (4,171 rows) — richer player metadata
 
@@ -464,19 +502,19 @@ Worth a spot-check if the next agent wants to add it: query `SELECT * FROM JEDDY
 
 | Gap | Effort | Pattern |
 |---|---|---|
-| `FLAT.team_box_stats` from TEAMSTATISTICS | ~30 min | New flat table; CTAS pattern matching `001_player_box.sql`. Add to 040_flat_tables.sql + new 050_seed_from_jb/012_team_box_stats.sql. |
+| ~~`FLAT.team_box_stats` from TEAMSTATISTICS~~ | **deleted** | Phantom gap (1.7% column population). Covered by `DERIVED.vw_team_box` view instead. |
 | Enrich `FLAT.players` from COMMON_PLAYER_INFO | ~20 min | ALTER ADD COLUMN for new fields, UPDATE via LEFT JOIN at seed time. |
 | Enrich `FLAT.games` from `GAMES` plural | ~15 min | Same LEFT JOIN pattern + ADD COLUMN. |
 | Investigate PLAYERCODE | ~5 min | Single SELECT. If it's the BR slug, document as a future Decision #3.1 refinement (no code change required today; the resolver works). |
 | Maybe-add `SYNTHETIC_QUARTERS` | ~30 min spot-check + 20 min add if validated | New flat table; CTAS pattern. |
 
-**Total: ~1.5 hours to close all gaps from the JB seed side.**
+**Total: ~40 min to close remaining gaps from the JB seed side** (down from 1.5h after Gap 1 deletion).
 
 #### Decision framework for the next agent
 
 Add each only if the friend will actually query it:
 
-- **TEAMSTATISTICS**: add if the friend cares about game-narrative queries ("close games with lots of lead changes", "bench-heavy wins", "fast-break-driven offenses"). Add disclaimer that data freezes Jun 2023.
+- ~~**TEAMSTATISTICS**~~: phantom gap, deleted. Team-level queries use `DERIVED.vw_team_box` instead.
 - **COMMON_PLAYER_INFO**: add if the friend wants clean position strings (especially since ~30% of `players.position` is NULL) or wants the `GREATEST_75_FLAG` filter. Low risk, additive only.
 - **GAMES plural metadata**: add if the friend cares about playoff series context (game 7 of the Finals) or attendance pre-2023. Worth doing alongside any other refresh.
 - **PLAYERCODE investigation**: do this regardless — 5 minutes — to know if Decision #3's name-match resolver has a more elegant alternative for any future rebuild.
