@@ -23,7 +23,10 @@ INSERT INTO ZK_NBA.FLAT.game_officials (
 )
 SELECT DISTINCT
     GAME_ID::STRING              AS game_id,
-    OFFICIAL_ID::INT             AS official_id,
+    -- official_id is now STRING (was INT) to accommodate BR slug fallbacks
+    -- for refs we can't resolve via JB xref. JB's NBA Stats API integer IDs
+    -- get stringified here so the column has a single uniform type.
+    OFFICIAL_ID::STRING          AS official_id,
     TRIM(FIRST_NAME)             AS first_name,
     TRIM(LAST_NAME)              AS last_name,
     JERSEY_NUM::INT              AS jersey_num,

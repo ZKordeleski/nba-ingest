@@ -51,6 +51,7 @@ from nba_ingest.flatteners.boxscore import (
     flatten_player_box_advanced,
     flatten_player_box_basic,
 )
+from nba_ingest.resolvers.player_id import resolve_player_ids
 
 logging.basicConfig(
     level=logging.INFO,
@@ -180,6 +181,7 @@ USING (
     SELECT
         $1:game_id::STRING              AS game_id,
         $1:player_id::STRING            AS player_id,
+        $1:br_player_slug::STRING       AS br_player_slug,
         $1:player_name::STRING          AS player_name,
         $1:team_id::INT                 AS team_id,
         $1:team_name::STRING            AS team_name,
@@ -215,12 +217,13 @@ USING (
     FROM {stage_file}
     (FILE_FORMAT => 'ZK_NBA.RAW.JSON_FF')
 ) AS src
--- MERGE key is (game_id, player_name). The PK is (game_id, player_id) but
--- BR scrapes leave player_id NULL until decision #3 (player_id from BR slug)
--- is implemented in a later slice. NULL = NULL is FALSE in SQL, so matching
--- on player_id alone would always insert new rows.
-ON target.game_id = src.game_id AND target.player_name = src.player_name
+-- MERGE on (game_id, player_id) — the natural PK. With decision #3, player_id
+-- is now a real NBA Stats API id resolved at write time, so NULL = NULL
+-- collisions can't happen.
+ON target.game_id = src.game_id AND target.player_id = src.player_id
 WHEN MATCHED THEN UPDATE SET
+    br_player_slug = src.br_player_slug,
+    player_name = src.player_name,
     team_abbr = src.team_abbr,
     game_date = src.game_date,
     is_home = src.is_home,
@@ -234,13 +237,13 @@ WHEN MATCHED THEN UPDATE SET
     source = src.source,
     fetched_at = src.fetched_at
 WHEN NOT MATCHED THEN INSERT (
-    game_id, player_id, player_name, team_id, team_name, team_abbr,
+    game_id, player_id, br_player_slug, player_name, team_id, team_name, team_abbr,
     opponent_team_name, game_date, season, game_type, is_win, is_home,
     minutes_played, pts, ast, reb, oreb, dreb, stl, blk, tov, pf,
     fgm, fga, fg_pct, fg3m, fg3a, fg3_pct, ftm, fta, ft_pct,
     plus_minus, source, fetched_at
 ) VALUES (
-    src.game_id, src.player_id, src.player_name, src.team_id, src.team_name, src.team_abbr,
+    src.game_id, src.player_id, src.br_player_slug, src.player_name, src.team_id, src.team_name, src.team_abbr,
     src.opponent_team_name, src.game_date, src.season, src.game_type, src.is_win, src.is_home,
     src.minutes_played, src.pts, src.ast, src.reb, src.oreb, src.dreb, src.stl, src.blk, src.tov, src.pf,
     src.fgm, src.fga, src.fg_pct, src.fg3m, src.fg3a, src.fg3_pct, src.ftm, src.fta, src.ft_pct,
@@ -255,6 +258,7 @@ USING (
     SELECT
         $1:game_id::STRING              AS game_id,
         $1:player_id::STRING            AS player_id,
+        $1:br_player_slug::STRING       AS br_player_slug,
         $1:ts_pct::FLOAT                AS ts_pct,
         $1:efg_pct::FLOAT               AS efg_pct,
         $1:fg3a_rate::FLOAT             AS fg3a_rate,
@@ -274,9 +278,10 @@ USING (
     FROM {stage_file}
     (FILE_FORMAT => 'ZK_NBA.RAW.JSON_FF')
 ) AS src
--- Synthetic player_id == player_name (see PLAYER_BOX_BASIC_MERGE_SQL comment).
+-- player_id is the resolved NBA Stats API id (decision #3).
 ON target.game_id = src.game_id AND target.player_id = src.player_id
 WHEN MATCHED THEN UPDATE SET
+    br_player_slug = src.br_player_slug,
     ts_pct = src.ts_pct, efg_pct = src.efg_pct,
     fg3a_rate = src.fg3a_rate, fta_rate = src.fta_rate,
     orb_pct = src.orb_pct, drb_pct = src.drb_pct, trb_pct = src.trb_pct,
@@ -285,12 +290,12 @@ WHEN MATCHED THEN UPDATE SET
     ortg = src.ortg, drtg = src.drtg, bpm = src.bpm,
     fetched_at = src.fetched_at
 WHEN NOT MATCHED THEN INSERT (
-    game_id, player_id,
+    game_id, player_id, br_player_slug,
     ts_pct, efg_pct, fg3a_rate, fta_rate,
     orb_pct, drb_pct, trb_pct, ast_pct, stl_pct, blk_pct, tov_pct, usg_pct,
     ortg, drtg, bpm, fetched_at
 ) VALUES (
-    src.game_id, src.player_id,
+    src.game_id, src.player_id, src.br_player_slug,
     src.ts_pct, src.efg_pct, src.fg3a_rate, src.fta_rate,
     src.orb_pct, src.drb_pct, src.trb_pct, src.ast_pct, src.stl_pct, src.blk_pct, src.tov_pct, src.usg_pct,
     src.ortg, src.drtg, src.bpm, src.fetched_at
@@ -431,13 +436,24 @@ def _settle_game(slug: str, conn, tmpdir: Path) -> dict:
     if game_row is None:
         raise RuntimeError(f"flatten_game_row returned None for {slug}")
 
+    # Decision #3: resolve every BR player slug to canonical NBA Stats API id.
+    # This is the single source of truth for player_id across all FLAT tables.
+    # The resolver checks DERIVED.player_xref first (instant); only never-seen
+    # slugs require a one-time BR player-page fetch.
+    player_anchors = box.get("player_anchors", {})
+    slug_to_nba = resolve_player_ids(conn, player_anchors)
+
     player_rows = (
-        flatten_player_box_basic(slug, home_team, home_df, is_home=True)
-        + flatten_player_box_basic(slug, away_team, away_df, is_home=False)
+        flatten_player_box_basic(slug, home_team, home_df, is_home=True,
+                                 player_anchors=player_anchors, slug_to_nba=slug_to_nba)
+        + flatten_player_box_basic(slug, away_team, away_df, is_home=False,
+                                   player_anchors=player_anchors, slug_to_nba=slug_to_nba)
     )
     advanced_rows = (
-        flatten_player_box_advanced(slug, home_team, box["advanced"].get("home"))
-        + flatten_player_box_advanced(slug, away_team, box["advanced"].get("away"))
+        flatten_player_box_advanced(slug, home_team, box["advanced"].get("home"),
+                                    player_anchors=player_anchors, slug_to_nba=slug_to_nba)
+        + flatten_player_box_advanced(slug, away_team, box["advanced"].get("away"),
+                                      player_anchors=player_anchors, slug_to_nba=slug_to_nba)
     )
     line_row = flatten_line_score(slug, box.get("line_score"))
     line_rows = [line_row] if line_row else []

@@ -78,8 +78,9 @@ COMMENT = 'One row per game. Wide format: both teams stats in one row. Source: J
 -- --------------------------------------------------------------------------
 CREATE OR REPLACE TABLE ZK_NBA.FLAT.player_box_basic (
     game_id              STRING  NOT NULL COMMENT 'NBA game ID. Join to games.game_id.',
-    player_id            STRING  NOT NULL COMMENT 'NBA player ID (PERSONID from JB, or BR player slug converted to ID).',
-    player_name          STRING           COMMENT 'Full player name (first + last).',
+    player_id            STRING  NOT NULL COMMENT 'Canonical NBA Stats API player ID. JB seed: PERSONID directly. BR scrape: resolved from BR slug via DERIVED.player_xref (name match against JB seed, fallback fetch of BR player page external link to stats.nba.com).',
+    player_name          STRING           COMMENT 'Full player name (first + last). May have diacritics from BR (Jokić), ASCII from JB (Jokic).',
+    br_player_slug       STRING           COMMENT 'BR player slug (e.g., wembavi01). Populated for source=br_scrape rows; NULL for JB seed. Diagnostic only — use player_id for joins.',
     team_id              INT              COMMENT 'Player''s team ID for this game.',
     team_name            STRING           COMMENT 'Player''s team name (city + nickname).',
     team_abbr            STRING           COMMENT 'Player''s team abbreviation.',
@@ -122,7 +123,8 @@ COMMENT = 'One row per player per game. Basic box score stats. Source: JB PLAYER
 -- --------------------------------------------------------------------------
 CREATE OR REPLACE TABLE ZK_NBA.FLAT.player_box_advanced (
     game_id              STRING  NOT NULL COMMENT 'Join to player_box_basic on (game_id, player_id).',
-    player_id            STRING  NOT NULL COMMENT 'Player ID.',
+    player_id            STRING  NOT NULL COMMENT 'Canonical NBA Stats API player ID. Resolved same way as player_box_basic.player_id — see that column''s comment.',
+    br_player_slug       STRING           COMMENT 'BR player slug. Populated for BR-scraped rows; diagnostic only.',
     ts_pct               FLOAT            COMMENT 'True shooting percentage. (PTS / (2 * (FGA + 0.44 * FTA)))',
     efg_pct              FLOAT            COMMENT 'Effective field goal percentage. ((FGM + 0.5 * FG3M) / FGA)',
     fg3a_rate            FLOAT            COMMENT '3-point attempt rate (FG3A / FGA).',
@@ -186,7 +188,8 @@ COMMENT = 'Quarter-by-quarter scoring. One row per game (home + away wide). Sour
 -- --------------------------------------------------------------------------
 CREATE OR REPLACE TABLE ZK_NBA.FLAT.game_officials (
     game_id              STRING  NOT NULL COMMENT 'Join to games.game_id.',
-    official_id          INT     NOT NULL COMMENT 'NBA official ID.',
+    official_id          STRING  NOT NULL COMMENT 'Canonical NBA Stats API official ID (stringified). JB seed: OFFICIAL_ID directly cast to STRING. BR scrape: resolved from BR referee slug via DERIVED.official_xref (name match against JB; fallback to BR slug if unresolvable). Was INT in pre-decision-2 schema.',
+    br_official_slug     STRING           COMMENT 'BR referee slug (e.g., davisma99r). Populated for BR-scraped rows; diagnostic only.',
     first_name           STRING           COMMENT 'Official''s first name.',
     last_name            STRING           COMMENT 'Official''s last name.',
     jersey_num           INT              COMMENT 'Official''s jersey number.',
@@ -194,7 +197,7 @@ CREATE OR REPLACE TABLE ZK_NBA.FLAT.game_officials (
 
     PRIMARY KEY (game_id, official_id)
 )
-COMMENT = 'Referee assignments per game. One row per official per game. Source: JB OFFICIALS — modern games only (pre-2000 games will not have rows here).';
+COMMENT = 'Referee assignments per game. One row per official per game. Source: JB OFFICIALS (1946-Jun 2023) + BR scrape (2023-present). official_id is STRING to accommodate both JB''s NBA Stats API integer IDs (cast to string) and unresolvable BR slugs.';
 
 -- --------------------------------------------------------------------------
 -- game_inactives

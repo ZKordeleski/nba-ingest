@@ -73,6 +73,28 @@ def _find_team_abbrs_from_tables(game_slug: str, visible: dict[str, pd.DataFrame
     return home_from_slug, ""
 
 
+_PLAYER_ANCHOR_RE = re.compile(
+    r"""<a\s+href=['"]/players/[a-z]/([a-z0-9]+)\.html['"][^>]*>([^<]+)</a>""",
+    re.IGNORECASE,
+)
+
+
+def _extract_player_anchors(html: str) -> dict[str, str]:
+    """Return {player_name: br_slug} for every player anchor on the page.
+
+    BR's box score HTML contains <a href="/players/x/slug01.html">Name</a>
+    tags in each player row. Names that appear under multiple anchors (e.g.,
+    in both basic and advanced tables) collapse to one entry. Diacritics in
+    names are preserved exactly as BR encodes them.
+    """
+    anchors: dict[str, str] = {}
+    for match in _PLAYER_ANCHOR_RE.finditer(html):
+        slug, name = match.group(1), match.group(2).strip()
+        if name and slug:
+            anchors[name] = slug
+    return anchors
+
+
 def _parse_meta(html: str) -> dict:
     """Extract officials, inactives, and attendance from page prose.
 
@@ -155,6 +177,7 @@ def fetch_boxscore(game_slug: str) -> dict:
         "line_score": df_for("line_score", hidden),
         "four_factors": df_for("four_factors", hidden),
         "meta": _parse_meta(html),
+        "player_anchors": _extract_player_anchors(html),
     }
 
     # Log which tables were found vs missing.

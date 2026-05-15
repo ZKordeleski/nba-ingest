@@ -94,6 +94,8 @@ def flatten_player_box_basic(
     df: pd.DataFrame,
     is_home: bool,
     game_date: Optional[str] = None,
+    player_anchors: Optional[dict[str, str]] = None,
+    slug_to_nba: Optional[dict[str, str]] = None,
 ) -> list[dict]:
     """Flatten a basic box score DataFrame into player_box_basic rows.
 
@@ -131,13 +133,22 @@ def flatten_player_box_basic(
             return 0 if is_dnp else _safe_int(val)
 
         player_name = str(row.get("Player", row.iloc[0])).strip()
+        # Resolve player_id (canonical NBA Stats API id). Decision #3.
+        br_slug: Optional[str] = (
+            player_anchors.get(player_name) if player_anchors else None
+        )
+        nba_id: Optional[str] = (
+            slug_to_nba.get(br_slug) if (slug_to_nba and br_slug) else None
+        )
+        # player_id is NOT NULL in the DDL. Order of preference:
+        #   1. Resolved NBA id (real Stats API id from xref or BR fetch)
+        #   2. BR slug (defensive — if BR fetch failed; not expected in practice)
+        #   3. player_name (last-resort fallback; mirrors pre-decision behavior)
+        resolved_player_id = nba_id or br_slug or player_name
         rows.append({
             "game_id": game_slug,
-            # player_id is NOT NULL in the DDL. Interim: use player_name as a
-            # synthetic ID until the BR player-slug extraction (decision #3) is
-            # implemented in a later slice. Reversible: a future UPDATE can swap
-            # synthetic IDs for real NBA player_ids by joining on player_name.
-            "player_id": player_name,
+            "player_id": resolved_player_id,
+            "br_player_slug": br_slug,
             "player_name": player_name,
             "team_id": None,
             "team_name": None,
@@ -179,6 +190,8 @@ def flatten_player_box_advanced(
     game_slug: str,
     team_abbr: str,
     df: pd.DataFrame,
+    player_anchors: Optional[dict[str, str]] = None,
+    slug_to_nba: Optional[dict[str, str]] = None,
 ) -> list[dict]:
     """Flatten an advanced box score DataFrame into player_box_advanced rows.
 
@@ -217,9 +230,14 @@ def flatten_player_box_advanced(
         # A row with no TS% AND no BPM has no advanced stats worth storing.
         if ts_pct is None and bpm is None:
             continue
+        # Resolve player_id same way as basic (decision #3 — see basic flattener).
+        br_slug = player_anchors.get(player_name) if player_anchors else None
+        nba_id = slug_to_nba.get(br_slug) if (slug_to_nba and br_slug) else None
+        resolved_player_id = nba_id or br_slug or player_name
         rows.append({
             "game_id": game_slug,
-            "player_id": player_name,  # Synthetic interim (decision #3 pending)
+            "player_id": resolved_player_id,
+            "br_player_slug": br_slug,
             "ts_pct": ts_pct,
             "efg_pct": _safe_float(row.get("eFG%")),
             "fg3a_rate": _safe_float(row.get("3PAr")),
