@@ -1,6 +1,6 @@
 # Rebuild Plan: Pure Basketball-Reference Architecture
 
-**Status**: Approved 2026-05-19. Ready for the next agent to begin Phase 1.
+**Status**: Approved 2026-05-19. Ready for the next agent to begin Phase 0.
 
 ---
 
@@ -26,6 +26,25 @@ These principles emerged from this session and should shape every rebuild decisi
 6. **Empty tables are deleted, not documented.** If a loader isn't built yet, the table doesn't exist yet. No "WIP" tables.
 7. **Audit before adding.** Verify column population, not just column existence, before scoping enrichment work. (The phantom Gap 1 lesson.)
 8. **Verify reserved words upfront.** `rows` bit us four times today; pre-check Snowflake reserved-word lists when writing throwaway audit SQL.
+
+---
+
+## Methodology: vertical slices + reflection gates
+
+Progress as a series of **thin vertical slices**, each one a working end-to-end pipeline at a different scope. Every slice produces queryable data and gets validated against expectations before the next slice expands scope. We pivot freely if a slice reveals the plan was wrong — that's the point of slicing.
+
+After every phase, a **reflection gate** asks three questions:
+
+1. **What did we actually do?** Concrete record of the implementation — what files changed, what data landed, what got skipped.
+2. **Why did we do it that way?** Decision log — what alternatives were considered, what constraints drove the call.
+3. **Do findings jive with the plan?** Reality check — what was easier than expected, what was harder, what assumptions broke. Update the next phase's scope accordingly.
+
+Reflection gate output gets appended as a dated section to this doc (e.g., `## Phase 1 Reflection — YYYY-MM-DD`). That keeps the rebuild's own decision history in one place — the same load-bearing-history pattern that makes `HANDOFF.md` useful for the current state.
+
+**Anti-patterns we're avoiding** (drawn from this session's experience):
+- "Build it all then validate" — bugs surface late, expensive to fix
+- "Validate by reading code" — code doesn't reveal data-quality issues; only running queries does
+- "Skip the retro" — every painful surprise this session could have been caught earlier with a 10-minute "does this make sense?" gate
 
 ---
 
@@ -141,50 +160,123 @@ These are all derivable from per-game data via aggregations, BUT pre-computed ta
 
 ## Phase plan
 
-### Phase 1 — Validation (1 session, ~1-2 hours, no scraping commitment yet)
+Each phase ends with a **reflection gate** — append a dated section to this doc capturing (1) what we actually did, (2) why, (3) what findings changed our next-phase scope. Pivot freely.
 
-**Goal**: prove BR has what we need before committing to ~55 hours of scraping.
+### Phase 0 — BR exploration (1-2 sessions, no scraping commitment)
 
-- Fetch and parse one sample game per era: 1950, 1962, 1975, 1985, 2000, 2010, 2024.
-- For each: confirm we can extract player_box, line_score, officials (where applicable), meta block.
-- Document era-specific gaps (e.g. "pre-1976: no per-player breakdown, totals only"; "1976-1995: no advanced stats from BR"; etc.).
-- Run a 5-minute scrape against `/boxscores/?month=11&day=5&year=1949` to confirm date-index pages work that far back.
-- **Outcome**: go/no-go on the rebuild. If BR's pre-1976 coverage is poor, course-correct (e.g. keep JB for pre-1976, BR for 1976+). If good, commit.
+**Goal**: catalog what BR actually exposes, beyond the page types we already know. This is wide-and-shallow research before we commit to any schema or scope.
 
-### Phase 2 — Parallel-build setup (~2-3 hours code)
+Deliverable: a new `docs/BR_DATA_CATALOG.md` document. The data-inventory section above tells us what we *want*; the catalog tells us what BR *has* and informs us about things we didn't know to want.
 
-**Goal**: scaffold a parallel `ZK_NBA_V2` database; reuse every existing code path.
+Tasks:
+- **Inventory every BR page type** by walking the site map: boxscore, player, team-season, franchise, coach, official (referee), schedule, leagues, awards, all-star, all-NBA, draft, standings, leaders, transactions, playoffs bracket, shot charts, play-by-play. For each: URL pattern, HTML structure (visible tables, hidden-comment tables, meta blocks), data fields, era coverage.
+- **Era sample fetches** — pull one game and one player per era and document era-specific gaps:
+  - 1947 (BAA founding year)
+  - 1955 (post BAA-NBA merger)
+  - 1965 (pre-shot-clock-fully-adopted)
+  - 1975 (ABA era)
+  - 1985 (3-point line introduced)
+  - 1995 (modern stats era starts)
+  - 2010 (advanced stats fully tracked)
+  - 2024 (current)
+- **Cross-page navigation map** — how do BR pages link to each other? E.g., boxscore → player page → external `stats.nba.com` link (drives the player_id resolver). Document the link graph so the next agent knows the resolver patterns.
+- **Surprise inventory** — things BR has that REBUILD_PLAN.md's data inventory didn't mention. Examples to watch for: salary history pages, contract data, college career stats per player, international career stats, draft-prospect pages (pre-draft), referee crew assignments, scoring-distribution tables (by quarter/half).
+- **Rate-limiting reality check** — confirm BR's `robots.txt` is still 3s crawl-delay (or revised), confirm we won't hit any IP-based bans during sustained scrape. Maybe do a 10-minute sustained-fetch test to estimate real throughput vs. the theoretical 3s/page.
 
-- Create `sql/V2/` directory mirroring current `sql/` structure.
-- Re-run our existing DDL (`040_flat_tables.sql`) against `ZK_NBA_V2`, with these changes:
-  - Drop the `source` column on every table (one source = no need)
-  - Update column COMMENTs to remove all "JB: X | BR: Y" forking — describe the single canonical resolution
-  - Add `is_starter` BOOLEAN to `player_box_basic`
-  - Switch `minutes_played` from INT to FLOAT/NUMERIC for MM:SS precision
-  - Add the new "wanted" columns to existing tables (attendance, arena, series_label on `games`; shoots, birth_city on `players`)
-- Add DDL for new tables: `standings`, `awards`, `all_stars`, `all_nba_teams`, `season_leaders`, `coaches`
-- Build `historical_backfill.py` orchestrator:
-  - Walks every NBA season from 1946 forward
-  - Checkpoints to `ZK_NBA_V2.RAW.backfill_progress` (so 6h GHA limit doesn't lose state)
-  - Calls existing `_settle_game()` per game (after adapting it to write to V2)
-- Add a `.github/workflows/historical_backfill.yml` workflow with `workflow_dispatch` inputs for season-range
+**Reflection gate ✋**
+- Update the data inventory above with anything Phase 0 surfaced.
+- Decide which "new tables" (standings, awards, etc.) are confirmed-included vs. deferred to a Phase 7 follow-up.
+- Decide pre-1976 coverage: does BR have enough per-player data to use as the sole source, or do we keep JB as fallback for the very-old era?
+- Update Phase 1's slice definition based on what we learned.
 
-### Phase 3 — Scrape backfill (~3-7 days wall time, ~0 effort once started)
+---
 
-**Goal**: populate `ZK_NBA_V2` with everything from BR.
+### Phase 1 — Vertical slice: one team, one recent season (~1 session, ~3-4 hours)
 
-- Spawn parallel GHA workflows by decade chunks (1946-1959, 1960s, 1970s, 1980s, 1990s, 2000s, 2010s, 2020s).
-- Each chunk ~5-7 hours of crawling (well under GHA's 6h limit if we checkpoint).
-- Monitor via `gh run list`; re-run any failures.
-- Scrape new tables: standings (80 pages), awards (80 pages), all_stars (80 pages), all_nba (1 page), season_leaders (80 pages), coaches (~400 coaches × 1 page). Total ~700 pages × 3s = ~35 min.
-- Player bios: ~6,500 player pages × 3s = ~5.5 hours (one-shot).
-- Team-season pages (per-coach, per-record): ~30 × 80 = 2,400 pages × 3s = ~2 hours.
-- Play-by-play: defer to Phase 3.5 if it doesn't fit. ~2.4M events worth of pages = another ~48 hours of crawling. Maybe limit to 1996+ where coverage is reliable.
+**Goal**: prove the end-to-end pipeline works on a narrow, contained scope. Build the minimum viable plumbing for ONE team's ONE recent season — everything from fetch to query.
 
-### Phase 4 — Parity validation (~1-2 hours)
+Slice: **2024-25 Denver Nuggets** (~95 games incl. playoffs). Recent so coverage is robust; one team so we're not gated on volume.
+
+Tasks:
+- Create `ZK_NBA_V2` database + the minimum required schema: `games`, `player_box_basic`, `player_box_advanced`, `line_scores`, `players`, `teams`. (Skip game_officials, game_inactives, draft, pbp for this slice — add in later slices.)
+- DDL changes from V1: drop `source` columns; add `is_starter` BOOLEAN to `player_box_basic`; switch `minutes_played` to decimal; add `attendance`, `arena_name`, `series_label`, `broadcast_network` to `games`.
+- Build the minimum-viable backfill orchestrator: hardcode "Denver Nuggets, 2024-25 season" and walk the team-season page to enumerate game slugs.
+- Reuse `daily_settle.py`'s fetch/flatten/MERGE pipeline. Adapt for V2 schema.
+- Run the slice. ~95 games × 3s = ~5 minutes of crawling.
+- Validate: query `vw_team_box`, query Jokic's season, join player_box to games. Does it all work? Does the data look right?
+
+**Reflection gate ✋**
+- Did the V2 schema design hold up? Any column added in Phase 0 that turned out to be wrong shape?
+- Was `is_starter` extractable? `minutes_played` as decimal? Or did we lose precision?
+- Did the BR fetch behave as expected, or were there surprises?
+- What schema changes are needed before expanding scope?
+
+---
+
+### Phase 2 — Vertical slice: full recent season, all teams (~1 session, ~5-6 hours)
+
+**Goal**: test throughput, schema robustness across teams, and the orchestrator's stamina. Generalize from one team to thirty.
+
+Slice: **all 30 teams, 2024-25 season** (~1,316 games incl. playoffs).
+
+Tasks:
+- Generalize the orchestrator to walk all teams' season pages OR walk the date-index pages (the latter avoids team-page duplication — every game has two team-page entries).
+- Add checkpointing to `ZK_NBA_V2.RAW.backfill_progress` so a 6h GHA limit doesn't reset progress.
+- Add the remaining per-game tables: `game_officials`, `game_inactives`. Same DDL adjustments as Phase 1.
+- Run on a GHA workflow (estimate: 1,316 × 3s = ~1.1 hours scrape, comfortably under 6h).
+- Validate: full season parity vs current `ZK_NBA.player_box_basic` for season=2025. Row counts should match within tolerance.
+
+**Reflection gate ✋**
+- Did GHA's 6h limit get close? If yes, more aggressive checkpointing for Phase 3.
+- Did parallel team-page fetches cause rate-limiting? (We shouldn't be doing parallel; sanity-check the orchestrator's serial behavior.)
+- Any per-team data oddities (relocated teams, mid-season team changes)?
+- Schema still right after a full season's worth of data?
+
+---
+
+### Phase 3 — Vertical slice: one historical decade (~1 session + GHA wall time)
+
+**Goal**: stress-test era handling. Modern data is easy; old data is where assumptions break.
+
+Slice: **the 1970s** (1969-70 through 1978-79). 10 seasons, ~10,000 games. Diverse: ABA-era oddities, pre-3-point-line stats, less complete advanced data, franchise relocations.
+
+Tasks:
+- Run the orchestrator over 10 seasons. ~10K games × 3s = ~8 hours; split into two GHA workflow runs (e.g. 1970-74 + 1975-79).
+- Add `team_history` JOIN logic if relocated franchises need special handling.
+- Add `draft` table population (BR draft pages for these years).
+- Spot-check: famous old games (Wilt's 100 was 1962, just outside; pick Kareem-era games like the 1970-71 Bucks championship run).
+
+**Reflection gate ✋**
+- Did pre-3pt-line games' `fg3_pct` columns NULL out correctly (no 3-pointers existed)?
+- Did `is_starter` work for old games where BR's table format may differ?
+- Did `attendance` show up for old games?
+- Were there franchise-name complications (Cincinnati Royals → Kansas City Kings, etc.)?
+- Anything else era-specific that breaks assumptions?
+
+---
+
+### Phase 4 — Full historical backfill (~3-5 days wall time, ~0 active effort)
+
+**Goal**: populate everything else.
+
+Tasks:
+- Run remaining decades in parallel GHA workflows: 1946-1959, 1960s, 1980s, 1990s, 2000s, 2010s, 2020s.
+- Run the additional-table scrapes (the "new tables" from data inventory): standings (~80 pages), awards (~80 pages), all_stars (~80 pages), season_leaders (~80 pages), coaches (~400 pages), franchise pages (~30 pages). Total ~700 pages × 3s = ~35 min.
+- Run player bios scrape (~6,500 pages × 3s = ~5.5 hours).
+- Defer play-by-play to Phase 7 unless Phase 0 said otherwise.
+
+**Reflection gate ✋**
+- Were any decades different from the 1970s template in Phase 3? What surprised?
+- Did any GHA runs fail? What was the failure mode? Re-run cleanly?
+- Row counts per era as expected?
+
+---
+
+### Phase 5 — Parity validation (~1 session, ~2 hours)
 
 **Goal**: prove `ZK_NBA_V2` is at least as good as `ZK_NBA` before swap.
 
+Tasks:
 - Famous game spot-checks (each should match `ZK_NBA` values within rounding):
   - Wilt's 100-point game (1962-03-02)
   - Jordan's 63 vs Boston (1986-04-20)
@@ -193,9 +285,16 @@ These are all derivable from per-game data via aggregations, BUT pre-computed ta
   - Jokic's most recent Finals game
 - Career total spot-checks: LeBron lifetime points, Russell rebounds, Wilt scoring titles
 - Row count comparison: `ZK_NBA.player_box_basic` vs `ZK_NBA_V2.player_box_basic` per season
+- Spot-check the new tables (standings, awards) against known facts (1996 Bulls 72 wins; 1962 MVP was Russell)
 - Document any V2-vs-V1 deltas. Expected: V2 has *more* rows (BR captures some games JB missed; we saw +4,103 for 2024-25 already).
 
-### Phase 5 — Cutover (~30 min, atomic)
+**Reflection gate ✋**
+- Any spot checks that don't match? Bug or expected? (Sometimes BR's values legitimately differ from NBA Stats API by a few decimal places.)
+- Is V2 *worse* than V1 on any dimension? If yes, must be addressed before cutover.
+
+---
+
+### Phase 6 — Cutover (~30 min, atomic)
 
 **Clean swap. No parallel persistence; once the old is dead it's dead.**
 
@@ -206,11 +305,18 @@ ALTER DATABASE ZK_NBA_V2 RENAME TO ZK_NBA;
 ```
 
 - Same Snowflake account, role, warehouse, DB name post-rename. **No GHA secret changes needed.**
-- Update `daily_settle.py` only if it was hardcoded to `ZK_NBA_V2` during Phase 2; otherwise it just continues against the renamed DB.
+- Update `daily_settle.py` only if it was hardcoded to `ZK_NBA_V2` during Phase 1; otherwise it just continues against the renamed DB.
 - Restart daily cron (it'll fire next at 8:30 UTC).
 
-### Phase 6 — Cleanup (~1-2 hours)
+**Reflection gate ✋**
+- First post-cutover cron run: did it succeed? Was the data clean?
+- Any agent queries that now fail that worked before? Investigate immediately (within Snowflake time-travel window).
 
+---
+
+### Phase 7 — Cleanup + deferred enrichments (~1-2 hours active + optional follow-ups)
+
+Hard cleanup (active, do these immediately after cutover):
 - Delete `sql/050_seed_from_jb/` directory entirely
 - Delete `sql/060_xref_setup.sql` JB-seeding step (xref tables now populated by resolvers directly)
 - Drop `JB_HISTORIC_NBA` references from `docs/SETUP.md` and `README.md`
@@ -220,6 +326,17 @@ ALTER DATABASE ZK_NBA_V2 RENAME TO ZK_NBA;
 - Update `HANDOFF.md` with a "rebuild complete" entry; preserve the data-quality audit section as historical context
 - Update all table-level COMMENTs to remove "Source boundary" language (one source, one semantic)
 
+Deferred enrichments (optional, do as future-friend asks dictate):
+- Play-by-play (modern games): adds shot/event-level data for ~25 years
+- Shot chart data (per-shot x/y/distance/zone)
+- Coach metadata table (per-team per-season)
+- Salary history (if BR exposes it cleanly)
+- College career stats per player
+
+**Reflection gate ✋ (the meta-retro)**
+- What were the biggest surprises of the rebuild? Update the architectural principles section above.
+- What's the next bottleneck? Plan the next initiative.
+
 ---
 
 ## Cutover model
@@ -227,6 +344,37 @@ ALTER DATABASE ZK_NBA_V2 RENAME TO ZK_NBA;
 **No parallel persistence.** Once `ZK_NBA_V2` is validated and renamed, the old `ZK_NBA` is dropped immediately. No 30-day grace. No backup. Snowflake time-travel (default 1 day) provides emergency rollback if Phase 5 reveals a parity issue we missed.
 
 Same Snowflake account, role (`DEVELOPER_ADMIN`), warehouse (`NBA_INGEST_WH`), final database name (`ZK_NBA`). GHA secrets unchanged. Daily cron picks up where it left off.
+
+---
+
+## Reflection gate template
+
+Copy-paste this template at the end of each phase. Append, don't overwrite — accumulating retros is the value.
+
+```markdown
+## Phase N Reflection — YYYY-MM-DD
+
+### What did we actually do?
+- Files changed: ...
+- Data landed: ... (row counts, tables touched)
+- Skipped from plan: ...
+- Added beyond plan: ...
+
+### Why did we do it that way?
+- Decisions made and rationale: ...
+- Alternatives considered: ...
+- Constraints that drove choices: ...
+
+### Do findings jive with the plan?
+- Assumptions that held: ...
+- Assumptions that broke: ...
+- Surprises (good and bad): ...
+
+### Updates to the rest of the plan
+- Phase N+1 scope adjustments: ...
+- Data inventory updates: ...
+- Principle additions/refinements: ...
+```
 
 ---
 
@@ -257,14 +405,16 @@ The new code is just the historical orchestrator. Everything else is plumbing we
 
 ## Estimated total effort
 
-| Phase | Code | Wall time |
-|---|---|---|
-| 1. Validation | 0 | 1-2 hours focused |
-| 2. Setup | ~3 hours | ~3 hours |
-| 3. Scrape | 0 | 3-7 days background |
-| 4. Validate | ~1 hour | ~2 hours focused |
-| 5. Cutover | ~30 min | ~30 min |
-| 6. Cleanup | ~1 hour | ~1-2 hours focused |
-| **Total** | **~5-6 hours** | **~1.5 weeks calendar** |
+| Phase | Active code/SQL | Wall time | Output |
+|---|---|---|---|
+| 0. BR exploration | ~30 min light scraping | 1-2 sessions focused | `docs/BR_DATA_CATALOG.md` + updated inventory |
+| 1. Vertical slice: 1 team / 1 season | ~3 hours | ~3-4 hours focused | Queryable Nuggets 2024-25 in ZK_NBA_V2 |
+| 2. Vertical slice: full season | ~2 hours | ~5-6 hours (incl. ~1.1h scrape) | All teams 2024-25 in V2 |
+| 3. Vertical slice: 1 decade | ~1 hour | ~10 hours (incl. ~8h scrape, split into 2 GHA runs) | 1970s in V2 |
+| 4. Full backfill | 0 | 3-5 days background | Everything in V2 |
+| 5. Parity validation | ~1 hour | ~2 hours focused | Pre-cutover go/no-go |
+| 6. Cutover | ~30 min | ~30 min | V2 renamed to ZK_NBA; legacy dropped |
+| 7. Cleanup + deferred enrichments | ~1-2 hours | ~1-2 hours focused | JB references purged; optional follow-ups identified |
+| **Total** | **~8-10 hours active** | **~2 weeks calendar** | |
 
-Most of that wall-time is unattended GHA scrape runs. Active focused time is roughly a long working day.
+Active focused time is ~1.5 working days spread across 5-6 sessions. Most wall-time is unattended GHA scrape runs. **Each phase ends with a reflection gate** — the rebuild's success depends on actually doing these gates, not skipping them in the name of speed.
