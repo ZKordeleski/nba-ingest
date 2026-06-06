@@ -14,6 +14,51 @@ Today's session was load-bearing for the rebuild: the BR fetchers, flatteners, p
 
 ---
 
+## V1 source-mash post-mortem: the NBA Finals miss (2026-06-05)
+
+A user asked the agent **"Describe the NBA Finals game this week"** and got nothing — three empty slots and a re-plan loop. Investigation traced every failure mode back to the source seam this rebuild exists to remove. Recording it here as the concrete, *currently-live* evidence behind principle #1 — the strongest case for the rebuild we have.
+
+### The user-visible failure
+
+The 2025-26 Finals games **are in `FLAT.games`** (ingest is current to 2026-06-03), but they're unqueryable: no filter for "the Finals" — or even "the playoffs" — returns a modern game. The agent correctly re-planned, probed `SEASON_TYPE`, and still found nothing, because the data genuinely cannot express the question.
+
+### Three live, measured failure modes — one root cause
+
+All three are the same bug: **a derivation that was correct for the JB seed (NBA-numeric `game_id`, where digit 1 encodes season type: `2`=regular, `4`=playoffs) was applied to BR data (date slugs like `202606030SAS`, where digit 1 is always `2`).** Instead of failing, it produced a confident, plausible, wrong answer.
+
+| Column | State on modern (BR) data | Why | Source |
+|---|---|---|---|
+| `games.season_type` | **NULL** for all 3,954 BR games | flattener stub, never filled | `flatteners/boxscore.py:568` (`"Slice G can fill from schedule page"`) |
+| `games.season_id` | **Wrong** — 100% `2xxxx`, zero playoff `4xxxx` | `LEFT(game_id,1)` is always `'2'` for a slug | `jobs/daily_settle.py:457` |
+| `player_box_basic.game_type` | **Wrong** — 104,466 rows all `'Regular Season'` | same `LEFT(game_id,1)` assumption | `jobs/daily_settle.py:487` |
+| *(no column)* | No Finals/round dimension exists at all | BR's "Finals - Game N" series label is parsed-adjacent and dropped | `flatteners/boxscore.py:430` keeps only officials/inactives/attendance |
+
+A modern playoff game is therefore *simultaneously* unlabeled (`season_type` NULL), mislabeled regular-season (`season_id` `2xxxx`), and mislabeled regular-season again (`game_type`). Three independent filters all fail.
+
+> **The NULL is the safe failure; the wrong value is the dangerous one.** `season_type` being NULL makes the agent re-plan. `season_id` being a confident `2xxxx` makes it answer *incorrectly* with no signal that anything is off. Rebuild bias: fail loud, never default-plausible.
+
+### It traces to the back-seed — but the residue is *schema-level*, not data-level
+
+The merge is physically clean (verified live): season ≥ 2024 is 100% `br_scrape`, 0 orphaned box rows, 0 NBA-numeric IDs surviving in the BR era. The dedup → recover → `_swap_to_br_canonical` reconciliation worked at the row level.
+
+What the merge left behind is a **fractured column shared across two sources with incompatible semantics:**
+
+- `season_type` carries JB's raw vocabulary untranslated (`050_seed_from_jb/002_games.sql:56` `TRIM(SEASON_TYPE)`) → `'Pre Season'`, and both `'All-Star'` *and* `'All Star'`; BR contributes NULL. The schema COMMENT invents a *third* vocabulary (`Regular Season | Playoffs | Play In | Preseason`) matching neither source.
+- `season_id` / `game_type` exist *only* to make BR slugs impersonate JB's NBA-numeric ID format so one column looks uniform. That impersonation is exactly where they break.
+- The documented boundary drifted from reality: README/plan say "clean cut at 2023-06-12," but JB box data ran to 2025-04-06 and the real reconciliation was a hand-run `dev/_swap_to_br_canonical.sql` at season ≥ 2024 (incl. recovering 65K rows an earlier dedup over-deleted, via time-travel `AT(OFFSET => -4500)`). The numbered pipeline doesn't reflect what actually happened.
+
+### Secondary findings (same sweep)
+
+- **Draft data stops at 2023** — `MAX(draft.season) = 2023`; the 2024 & 2025 classes were never ingested (`jobs/weekly_meta.py:168,181` are acknowledged stubs). The agent's "Draft Pick" / "Draft Combine" concepts are empty for recent classes.
+- `player_box_basic.plus_minus` is NULL for ~18.7% of modern rows (19,484 / 104,466) — a silent partial gap.
+- The BR→NBA abbreviation translation (`BRK→BKN`, `CHO→CHA`, `PHO→PHX`) is hardcoded inline in ~4 places in `daily_settle.py` — no single source of truth, the same duplication smell that let the `LEFT(game_id,1)` bug be written wrong in two columns.
+
+### Net for the rebuild
+
+Principle #1 (single source) removes the *root* of all of the above: a pure-BR pipeline has no second ID format to impersonate and no second vocabulary to reconcile. The post-mortem adds four guardrails (principles #9–#12 below) so the *class* of bug can't recur even within a single source.
+
+---
+
 ## Architectural principles (carried forward from today's learnings)
 
 These principles emerged from this session and should shape every rebuild decision:
@@ -26,6 +71,10 @@ These principles emerged from this session and should shape every rebuild decisi
 6. **Empty tables are deleted, not documented.** If a loader isn't built yet, the table doesn't exist yet. No "WIP" tables.
 7. **Audit before adding.** Verify column population, not just column existence, before scoping enrichment work. (The phantom Gap 1 lesson.)
 8. **Verify reserved words upfront.** `rows` bit us four times today; pre-check Snowflake reserved-word lists when writing throwaway audit SQL.
+9. **Normalize at ingest; never impersonate another source's encoding.** Each source maps its native fields → a canonical vocabulary/format in its *own* flattener, preserving the raw value alongside for audit. No column is ever derived by making one source mimic another's ID scheme — that's the `LEFT(game_id,1)` anti-pattern from the post-mortem above.
+10. **Fail loud, never default-plausible.** A value that can't be sourced is NULL (a *failed mapping*), not a fallthrough default that looks real. A `CASE` derivation gets an explicit unmatched branch that surfaces, not a silent `ELSE` that fabricates a category.
+11. **Validate against reality, not self.** Beyond row counts and date ranges, assert distributions that catch confidently-wrong data — e.g., "every recent season has playoff games," "no season's `season_type` is a single degenerate value." All three live bugs in the post-mortem would have tripped such a check on day one.
+12. **Reconciliation lives in the numbered pipeline, not dev scripts.** Any dedup / cutover / recovery step is a reproducible, validated pipeline step — so a rebuild can't re-improvise it (or re-introduce the over-delete it caused). `dev/_swap_to_br_canonical.sql` should never have been the canonical record of how the eras were merged.
 
 ---
 
