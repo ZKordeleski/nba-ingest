@@ -409,6 +409,8 @@ Single source of truth for everything we consciously *chose not to build yet*. A
 | Player-bio enrichments (`shoots`, `hall_of_fame_year`, birth granularity) | player · player page | Not core; HoF is the high-value one | "HoFers' rookie seasons" / lefty-leader queries | Deferred |
 | Salary history | (player, season, team) · player page | Out of core scope; verify BR exposes cleanly | salary / contract queries | Deferred |
 | College career stats | (player, season) · player page | Out of core scope | pre-NBA / draft-prospect queries | Deferred |
+| `players` bio table | player · BR player page | Needs a per-player page fetch; not in the Phase 1 boxscore-only slice | Phase 2, or any bio/age/college query | Deferred |
+| `teams` table + NBA-Stats `team_id` bridge | team | V2 uses BR abbr as canonical team id; the NBA-id bridge is only for cross-dataset joins | cross-dataset joins, or "best team ever" work | Deferred |
 
 > Phase 7 ("Cleanup + deferred enrichments") draws its worklist from this table — it is not a separate list. If you prefer external tracking, these rows map 1:1 to GitHub issues; say the word and I'll file them.
 

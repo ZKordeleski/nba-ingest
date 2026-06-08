@@ -53,10 +53,8 @@ CREATE OR REPLACE TABLE games (
     round            STRING           COMMENT 'Playoff round for postseason games (First Round | Conference Semifinals | Conference Finals | Finals | Play-In); NULL for regular season. Denormalized from playoff_series for query convenience.',
     series_slug      STRING           COMMENT 'FK -> playoff_series.series_slug for postseason games; NULL otherwise.',
     game_in_series   INT              COMMENT 'Game number within the playoff series (1..7), parsed from the boxscore <h1> ("… Game 5"). NULL for regular season.',
-    home_team_abbr   STRING           COMMENT 'Home team BR abbreviation (DEN, BRK, CHO, PHO — BR style).',
+    home_team_abbr   STRING           COMMENT 'Home team BR abbreviation (DEN, BRK, CHO, PHO). BR abbr is the canonical team identifier in V2 — single-source. An NBA-Stats team_id bridge is a later slice (only needed for cross-dataset joins). See Deferred backlog.',
     away_team_abbr   STRING           COMMENT 'Away team BR abbreviation.',
-    home_team_id     INT              COMMENT 'NBA Stats team ID for the home team, resolved at write time from abbr via teams (BR->NBA: BRK->BKN, CHO->CHA, PHO->PHX).',
-    away_team_id     INT              COMMENT 'NBA Stats team ID for the away team, resolved at write time.',
     home_pts         INT              COMMENT 'Home final score.',
     away_pts         INT              COMMENT 'Away final score.',
     home_wl          STRING           COMMENT 'W or L from the home perspective.',
@@ -84,11 +82,9 @@ COMMENT = 'One row per game, both teams wide. Single-source (BR). season_type/ro
 -- ==========================================================================
 CREATE OR REPLACE TABLE player_box_basic (
     game_id          STRING  NOT NULL COMMENT 'Join to games.game_id (BR slug).',
-    player_id        STRING  NOT NULL COMMENT 'Canonical NBA Stats player ID, resolved at write time via the BR player page -> stats.nba.com external link. Falls back to BR slug only if resolution fails.',
-    br_player_slug   STRING           COMMENT 'BR player slug (e.g. jokicni01). Diagnostic; use player_id for joins.',
+    player_id        STRING  NOT NULL COMMENT 'BR player slug (e.g. jokicni01) — the canonical player identifier in V2 (single-source). An NBA-Stats player_id bridge is a later slice; see Deferred backlog.',
     player_name      STRING           COMMENT 'Full name as shown on BR (may carry diacritics: Jokić).',
     team_abbr        STRING           COMMENT 'Player''s team BR abbreviation this game.',
-    team_id          INT              COMMENT 'NBA Stats team ID, resolved at write time from team_abbr.',
     is_home          BOOLEAN          COMMENT 'True if the player''s team was home.',
     is_starter       BOOLEAN          COMMENT 'True if the player appeared above the "Reserves" separator in the BR basic box (i.e., a starter).',
     is_win           BOOLEAN          COMMENT 'True if the player''s team won.',
@@ -110,8 +106,7 @@ COMMENT = 'One row per player per game, basic box. Single-source (BR). Counting 
 -- ==========================================================================
 CREATE OR REPLACE TABLE player_box_advanced (
     game_id        STRING  NOT NULL COMMENT 'Join to player_box_basic on (game_id, player_id).',
-    player_id      STRING  NOT NULL COMMENT 'Canonical NBA Stats player ID (same resolution as player_box_basic).',
-    br_player_slug STRING           COMMENT 'BR player slug; diagnostic.',
+    player_id      STRING  NOT NULL COMMENT 'BR player slug; matches player_box_basic.player_id.',
     ts_pct FLOAT, efg_pct FLOAT, fg3a_rate FLOAT, fta_rate FLOAT,
     orb_pct FLOAT, drb_pct FLOAT, trb_pct FLOAT, ast_pct FLOAT,
     stl_pct FLOAT, blk_pct FLOAT, tov_pct FLOAT, usg_pct FLOAT,
@@ -144,7 +139,7 @@ COMMENT = 'Quarter-by-quarter scoring, one row per game. Source: BR line_score (
 -- ==========================================================================
 CREATE OR REPLACE TABLE player_quarter_box (
     game_id        STRING  NOT NULL COMMENT 'Join to games.game_id.',
-    player_id      STRING  NOT NULL COMMENT 'Canonical NBA Stats player ID.',
+    player_id      STRING  NOT NULL COMMENT 'BR player slug; matches player_box_basic.player_id.',
     period         STRING  NOT NULL COMMENT 'q1 | q2 | q3 | q4 (and h1/h2 if half tables ingested).',
     team_abbr      STRING,
     minutes_played FLOAT, pts INT, ast INT, reb INT, oreb INT, dreb INT,
@@ -155,36 +150,10 @@ CREATE OR REPLACE TABLE player_quarter_box (
 )
 COMMENT = 'Player stats split by period. BR per-quarter tables present from <=2001 (absent 1995). Era coverage recorded in metric_coverage (metric = player_quarter_box).';
 
--- ==========================================================================
--- players — one row per player (bio).
--- ==========================================================================
-CREATE OR REPLACE TABLE players (
-    player_id    STRING  NOT NULL COMMENT 'Canonical NBA Stats player ID.',
-    br_slug      STRING           COMMENT 'BR player slug (e.g. jokicni01).',
-    first_name   STRING, last_name STRING,
-    birth_date   DATE, college STRING, country STRING,
-    height_in    FLOAT, weight_lb FLOAT, position STRING,
-    draft_year   INT, draft_round INT, draft_pick INT,
-    from_year    INT, to_year INT,
-    fetched_at   TIMESTAMP_NTZ,
-
-    PRIMARY KEY (player_id)
-)
-COMMENT = 'One row per player, from the BR player page. Resolved at write time when a player first appears in a box score.';
-
--- ==========================================================================
--- teams — one row per current franchise (30).
--- ==========================================================================
-CREATE OR REPLACE TABLE teams (
-    team_id       INT     NOT NULL COMMENT 'NBA Stats team ID.',
-    abbreviation  STRING           COMMENT 'NBA-style abbreviation (DEN, BKN, CHA, PHX).',
-    br_abbr       STRING           COMMENT 'BR-style abbreviation (DEN, BRK, CHO, PHO). The BR<->NBA map lives here, in data, not hardcoded across SQL (the V1 duplication smell).',
-    full_name     STRING, city STRING, year_founded INT,
-    fetched_at    TIMESTAMP_NTZ,
-
-    PRIMARY KEY (team_id)
-)
-COMMENT = 'One row per current NBA team. br_abbr is the single source of truth for the BR->NBA abbreviation map (was hardcoded inline in ~4 places in V1 daily_settle.py).';
+-- NOTE: `players` (bio) and `teams` (incl. the NBA-Stats id bridge) are NOT
+-- created in Phase 1 — per principle #6 (no empty WIP tables), a table exists
+-- only once it has a loader. They need player-page / team-page fetches that
+-- aren't part of this slice. Tracked in the Deferred backlog; added in Phase 2.
 
 -- ==========================================================================
 -- metric_coverage — THE source of truth for stat-availability per era.
