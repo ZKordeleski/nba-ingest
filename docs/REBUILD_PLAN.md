@@ -239,7 +239,7 @@ Phase 0's telos: *catalog what BR actually exposes before committing any schema,
 ### Reflection-gate decisions
 
 1. **Data-inventory updates:** advanced ≥1985 (done); `arena_name` → **include** (scorebox_meta); `broadcast_network` → **drop**; **add** a `round`/`series` dimension (`playoff_series` table + `games.round`, `games.game_in_series`); **add** `metric_coverage`; `player_quarter_box` → **include** as a 2001+ table; `minutes_played` → decimal; `is_starter` → derive from row position vs. the "Reserves" separator.
-2. **New tables — include vs defer:** Phase 1 = **core only** (`games`, `player_box_basic`, `player_box_advanced`, `line_scores`, `players`, `teams`) **+ round/series + `metric_coverage`**. Defer `standings`/`awards`/`all_stars`/`all_nba`/`season_leaders`/`coaches` to a later slice (cheap, ~1 page/season, but not needed for the core box-score/Finals goal). Defer shot-charts + PBP to Phase 7.
+2. **New tables — include vs defer:** Phase 1 = **core only** (`games`, `player_box_basic`, `player_box_advanced`, `line_scores`, `players`, `teams`) **+ round/series + `metric_coverage`**. Everything deferred goes to the **[Deferred backlog](#deferred-backlog-tracked)** with a trigger — `standings`/`awards`/`all_stars`/`all_nba`/`season_leaders`/`coaches` (cheap, ~1 page/season, not needed for the core goal), shot-charts + PBP, and just-in-time §1.3 cataloging. No item is deferred without a backlog row.
 3. **Pre-1976 coverage:** **BR-only, no JB fallback.** Confirmed BR coverage to 1946; single-source is the point. Thin old-era coverage is documented honestly via `metric_coverage`, not patched with a second source.
 4. **Phase 1 scope:** unchanged slice (2024-25 Denver Nuggets, ~95 games incl. their 2025 playoff run) — but the **test must assert correct `round` tagging on their 2025 playoff series**, the basketball-truth check that the current DB fails.
 
@@ -382,16 +382,35 @@ Hard cleanup (active, do these immediately after cutover):
 - Update `HANDOFF.md` with a "rebuild complete" entry; preserve the data-quality audit section as historical context
 - Update all table-level COMMENTs to remove "Source boundary" language (one source, one semantic)
 
-Deferred enrichments (optional, do as future-friend asks dictate):
-- Play-by-play (modern games): adds shot/event-level data for ~25 years
-- Shot chart data (per-shot x/y/distance/zone)
-- Coach metadata table (per-team per-season)
-- Salary history (if BR exposes it cleanly)
-- College career stats per player
+Deferred enrichments: **worklist is the [Deferred backlog](#deferred-backlog-tracked)** — pull rows whose trigger has fired (play-by-play, shot charts, coaches, awards/standings/leaders, salary, college stats, etc.). Do not maintain a separate list here.
 
 **Reflection gate ✋ (the meta-retro)**
 - What were the biggest surprises of the rebuild? Update the architectural principles section above.
 - What's the next bottleneck? Plan the next initiative.
+
+---
+
+## Deferred backlog (tracked)
+
+Single source of truth for everything we consciously *chose not to build yet*. A deferral is only legitimate if it lands here with a **trigger** — the concrete condition that pulls it back in. Nothing gets "deferred to Phase 7" in the abstract; it gets a row. When an item is built, mark it Done with the commit/phase, don't delete it (the record is the favor-to-future-us).
+
+| Item | Grain / source | Why deferred | Trigger to pull in | Status |
+|---|---|---|---|---|
+| `standings` table | (season, team) · `/leagues/NBA_{year}_standings.html` | Not needed for core box-score / Finals goal | "best team ever" / seed / conference-rank queries, or the recent-season aux-tables slice | Deferred |
+| `awards` table | (season, award) · `/awards/awards_{year}.html` | Narrative-only; derivable later | MVP / ROY / DPOY queries | Deferred |
+| `all_stars` table | (season, player) · `/allstar/NBA_{year}.html` | Narrative-only | "most All-Star selections" queries | Deferred |
+| `all_nba_teams` table | (season, tier, player) · `/awards/all_league.html` | Narrative-only | All-NBA / All-Defense queries | Deferred |
+| `season_leaders` table | (season, cat, rank, player) · `/leagues/NBA_{year}_leaders.html` | Derivable from box via window funcs | "scoring titles" / per-cat leader queries | Deferred |
+| `coaches` table | (coach, season, team) · `/coaches/{slug}.html` | Not in core grain | coach-career / "winningest coach" queries | Deferred |
+| Shot charts | per-shot x/y/distance/zone · `/boxscores/shot-chart/{slug}.html` | +1 fetch/game; high value but heavy | Phase 7, or heat-map / shot-zone queries | Deferred |
+| Play-by-play | event · `/boxscores/pbp/{slug}.html` | +~48h scrape; not needed for core | Phase 7 | Deferred |
+| §1.3 breadth page cataloging | n/a (catalog work) | Exploring pages we won't build against yet | **Just-in-time**: when the owning table's slice above is triggered | Deferred |
+| `inactive_reason` (injury/rest/G-League) | player-game · inactive meta | DNP-semantics ontology (method §5); not core | when modeling DNP / load-management queries | Deferred |
+| Player-bio enrichments (`shoots`, `hall_of_fame_year`, birth granularity) | player · player page | Not core; HoF is the high-value one | "HoFers' rookie seasons" / lefty-leader queries | Deferred |
+| Salary history | (player, season, team) · player page | Out of core scope; verify BR exposes cleanly | salary / contract queries | Deferred |
+| College career stats | (player, season) · player page | Out of core scope | pre-NBA / draft-prospect queries | Deferred |
+
+> Phase 7 ("Cleanup + deferred enrichments") draws its worklist from this table — it is not a separate list. If you prefer external tracking, these rows map 1:1 to GitHub issues; say the word and I'll file them.
 
 ---
 
