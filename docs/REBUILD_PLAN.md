@@ -269,6 +269,52 @@ Tasks:
 
 ---
 
+## Phase 1 Reflection — 2026-06-08
+
+Telos: prove the single-source pipeline lands one team-season *truthfully*, including correctly-identified playoff rounds — the thing V1 cannot do.
+
+### Run the test
+
+`sql/v2/090_phase1_test.sql` — **all 14 assertions pass.** Load: 96 games (82 regular + 14 playoff), 2,588 player-box rows, 2,588 advanced, 96 line scores, 15 playoff series, **0 quarantined**.
+
+| | Check | Result |
+|---|---|---|
+| 1-4 | coverage seeded (17), 82 reg games, 14 playoff games, 2588 box rows | ✓ |
+| 5 | all game_id are BR slugs (single-source, no impersonation) | ✓ |
+| 6-9 | domain guard on loaded data (no ties, made≤att, fg%∈[0,1], pts∈[0,105]) | ✓ |
+| 10 | NULL discipline: modern stl recorded for players who played (0 wrongly-null) | ✓ |
+| 11 | **every playoff game carries a canonical round + game_in_series** | ✓ (First Round, Conference Semifinals) |
+| 12 | **no playoff game mislabeled Regular Season** (the FINALS-class fix) | ✓ (0 mislabeled) |
+| 13 | **Jokić triple-doubles exist** (fan-recognizable truth) | ✓ (37) |
+| 14 | team box totals reconcile to player-pts sum | ✓ (0 mismatches) |
+
+The query V1 returned nothing for — *playoff games by round* — now works: First Round G1–G7 (DEN beat LAC 4-3), Conference Semifinals G1–G7 (DEN lost to OKC 4-3), each game tagged with round, game number, matchup, score.
+
+### Reflect against goals and values
+
+- **The headline bug is fixed and proven**, not just asserted: round/series is first-class and sourced from the bracket + boxscore `<h1>`, never from the game_id.
+- **Single source held**: every identifier is BR-native (slug/abbr); no second source, no impersonation, no `LEFT(game_id,1)`.
+- **The guard worked as a safety net** (0 quarantined this clean modern slice — its real test is the messy historical eras in Phase 3).
+- **Test-first paid off**: writing the basketball spot-checks before the build forced the orchestrator to actually source rounds, not just land rows. A row-count-only test would have passed a broken load.
+- **Principle #8 caught us once** (the `check` reserved word) — the same class as V1's `rows`. Fixed; reserved-word pre-check stays on the checklist.
+- No wall forced a values-diverging pivot.
+
+### Favors for future-us
+
+- `dev/_phase1_slice.py` is the reusable spine for Phase 2 (generalize team enumeration from one team to all 30; add advanced/line already done; add `players`/`teams`/`player_quarter_box` loaders).
+- `ZK_NBA_V2.FLAT.quarantine` table exists and is wired — Phase 3's historical eras will exercise it.
+- The bracket→series→round mapping is solved and documented in code; Phase 2+ reuse it directly.
+
+### Open for Phase 2 (next gate)
+
+- Generalize enumeration to all 30 teams for 2024-25 (dedupe shared games — each game appears on two teams' pages).
+- Add the deferred loaders per the backlog: `players` bio, `teams` + NBA-id bridge, `player_quarter_box`.
+- Series-slug matching currently keys on DEN's nickname; generalize to a teams/nickname map for all clubs.
+
+> ✋ **Gate: paused for sign-off before Phase 2.**
+
+---
+
 ### Phase 2 — Vertical slice: full recent season, all teams (~1 session, ~5-6 hours)
 
 **Goal**: test throughput, schema robustness across teams, and the orchestrator's stamina. Generalize from one team to thirty.
