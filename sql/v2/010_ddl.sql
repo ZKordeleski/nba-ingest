@@ -133,23 +133,11 @@ CREATE OR REPLACE TABLE line_scores (
 )
 COMMENT = 'Quarter-by-quarter scoring, one row per game. Source: BR line_score (comment-hidden table). OT columns NULL when the game had fewer overtimes.';
 
--- ==========================================================================
--- player_quarter_box — one row per player per quarter. BR exposes this from
--- <=2001 (verified Phase 0). Unlocks "best 4th-quarter scorers" etc.
--- ==========================================================================
-CREATE OR REPLACE TABLE player_quarter_box (
-    game_id        STRING  NOT NULL COMMENT 'Join to games.game_id.',
-    player_id      STRING  NOT NULL COMMENT 'BR player slug; matches player_box_basic.player_id.',
-    period         STRING  NOT NULL COMMENT 'q1 | q2 | q3 | q4 (and h1/h2 if half tables ingested).',
-    team_abbr      STRING,
-    minutes_played FLOAT, pts INT, ast INT, reb INT, oreb INT, dreb INT,
-    stl INT, blk INT, tov INT, pf INT, fgm INT, fga INT, fg3m INT, fg3a INT, ftm INT, fta INT,
-    fetched_at     TIMESTAMP_NTZ,
-
-    PRIMARY KEY (game_id, player_id, period)
-)
-COMMENT = 'Player stats split by period. BR per-quarter tables present from <=2001 (absent 1995). Era coverage recorded in metric_coverage (metric = player_quarter_box).';
-
+-- NOTE: `player_quarter_box` is deferred to Phase 2 (full-season extraction) — it
+-- comes free from the same boxscore pages Phase 2 re-scrapes, and wasn't in the
+-- plan's original Phase 1 scope. Its era coverage is already recorded in
+-- metric_coverage so the registry is complete ahead of the table.
+--
 -- NOTE: `players` (bio) and `teams` (incl. the NBA-Stats id bridge) are NOT
 -- created in Phase 1 — per principle #6 (no empty WIP tables), a table exists
 -- only once it has a loader. They need player-page / team-page fetches that
