@@ -2,6 +2,8 @@
 
 **Status**: Approved 2026-05-19. **Phase 0 in progress as of 2026-05-20** — see `docs/BR_DATA_CATALOG.md` for the underlying evidence. The data-inventory section below has been updated with rows marked **"(Phase 0 verified)"** or **"(Phase 0 revised)"** wherever exploration fetches changed the picture; rows without those markers are still hypothesized.
 
+> **How we work + why the hard design calls went the way they did: see [`REBUILD_METHOD.md`](REBUILD_METHOD.md)** — the teleological/test-first per-phase contract, the basketball-domain ontology audit (where else the FINALS-class gap shows up), the evolving-data-availability architecture (the `metric_coverage` registry + no-ambiguous-NULL invariant), and the scrape bad-data guard.
+
 ---
 
 ## Why we're rebuilding
