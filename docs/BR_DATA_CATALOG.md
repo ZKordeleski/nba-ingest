@@ -191,7 +191,8 @@ The plan's eight era-test points. Picks are **canonical / iconic games** so the 
 | `box-{TTT}-q1-basic` … `q4-basic` | 2010 | boundary between 1995-2010, unpinned |
 | `box-{TTT}-h1-basic`, `h2-basic` | 2010 | same boundary |
 | `meta.inactives` | 2010 | did not match in older eras (may be format diff) |
-| `meta.arena`, `meta.tv` | *never* | the literal `<strong>Arena:</strong>` / `<strong>TV:</strong>` label was not present in any sampled era — needs raw-HTML inspection to find where arena_name & broadcast_network actually live, if anywhere |
+| `meta.arena` | (in `scorebox_meta`) | **RESOLVED 2026-06-08** — arena/city/state is a pipe-delimited segment in `scorebox_meta`, not a `<strong>Arena:</strong>` block. Parse segment 2. See Phase 0 closeout finding D. |
+| `meta.tv` (broadcast) | *never* | **confirmed absent 2026-06-08** — no network string on the boxscore page. Dropped from scope (finding E). |
 
 ---
 
@@ -222,6 +223,16 @@ A 1972-73 `box-*-game-basic` table *renders* `STL BLK TOV ORB DRB` headers, but 
 *Design decision:* `metric_coverage` (per `REBUILD_METHOD.md` §3) is **authored from these domain breakpoints and verified against cell population** — never auto-derived from the scrape. The flatten step must treat a blank pre-tracking cell as *not-applicable* (governed by the no-ambiguous-NULL invariant), never coerce it to `0`. This is the stat-level instance of the FINALS-class ontology gap.
 
 *Era-template note:* the basic-box first-column header is `Player` pre-1974 and `Starters` from ~1974; `GmSc` (Game Score, derived) appears from ~1978-79. (Minor flatten-parsing detail.)
+
+**C. Per-quarter boundary tightened.** `box-{TTT}-qN-basic` present in **2001 and 2005** (8 tables = 4Q × 2 teams), absent in 1995. Boundary is **≤2001** (was "1995–2010, unpinned"). Good enough to scope `player_quarter_box` as a 2001+ table.
+
+**D. `arena_name` RESOLVED (revises the "never" verdict).** Arena lives in `scorebox_meta` as a pipe-delimited segment — `"8:00 PM, April 9, 2024 | FedEx Forum, Memphis, Tennessee | …"` — **not** a `<strong>Arena:</strong>` block. Parse segment 2 (venue, city, state). The earlier "never matched" was a wrong-DOM-construct false negative, not absent data.
+
+**E. `broadcast_network` confirmed ABSENT.** No `TNT`/`ESPN`/`ABC`/`NBA TV`/`TBS` anywhere in a 2024 boxscore page. **Drop from games-grain scope** (plan's Phase 1 already hedged this).
+
+**F. Advanced columns populated pre-2001.** 1985 Finals G6 (`198506090BOS`) `box-*-game-advanced` has `TS% USG% ORtg DRtg BPM` **all populated** (Worthy .738/19.0/144/109/10.2). Disproves the "ORtg/DRtg/BPM may be NULL pre-1996" caveat — advanced box is fully usable from **≥1985**. (Still distinct from stat-availability per finding B: confirm via cells, not column presence.)
+
+**Rate-limit check:** `robots.txt` → `Crawl-delay: 3`, matches `br_client.CRAWL_DELAY_SEC`. Sustained-throughput test folded into the Phase 1 ~95-game scrape (the real-world measurement).
 
 ---
 
