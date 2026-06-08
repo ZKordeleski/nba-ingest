@@ -1,6 +1,6 @@
 # Rebuild Plan: Pure Basketball-Reference Architecture
 
-**Status**: Approved 2026-05-19. Ready for the next agent to begin Phase 0.
+**Status**: Approved 2026-05-19. **Phase 0 in progress as of 2026-05-20** — see `docs/BR_DATA_CATALOG.md` for the underlying evidence. The data-inventory section below has been updated with rows marked **"(Phase 0 verified)"** or **"(Phase 0 revised)"** wherever exploration fetches changed the picture; rows without those markers are still hypothesized.
 
 ---
 
@@ -19,7 +19,7 @@ Today's session was load-bearing for the rebuild: the BR fetchers, flatteners, p
 These principles emerged from this session and should shape every rebuild decision:
 
 1. **Single source per logical entity.** No mixed-source FLAT tables; no per-row `source` column needed because there's only one source.
-2. **Explicit boundary documentation.** When BR genuinely lacks data for an era (e.g., advanced stats pre-2001, play-by-play pre-1996), document the era cleanly in column COMMENTs — not in agent-facing footnotes.
+2. **Explicit boundary documentation.** When BR genuinely lacks data for an era (e.g., per-quarter splits pre-modern era, play-by-play pre-1996, `attendance` pre-1955), document the era cleanly in column COMMENTs — not in agent-facing footnotes. *Note: the original example "advanced stats pre-2001" was disproven by Phase 0 — see `BR_DATA_CATALOG.md`. The boundary for the advanced player box is ≤1985, not 2001.*
 3. **Canonical entity resolution at write time.** Player_id, team_id, official_id all resolved during MERGE, not as post-hoc backfills. The resolvers we already built stay.
 4. **MERGE everywhere; no TRUNCATE.** All writes are idempotent. Re-running on already-settled data is a no-op semantically.
 5. **Schema metadata is load-bearing.** Column COMMENTs are read by the LLM agent at query time — every column gets an accurate, source-traceable comment.
@@ -64,9 +64,20 @@ Comprehensive list across three columns: *current state*, *value to the friend's
 | fgm/fga/pct, fg3m/fg3a/pct, ftm/fta/pct | ✓ | core | yes |
 | plus_minus | ✓ (partial) | core | yes |
 | **is_starter** (BOOLEAN) | ✗ | medium — unlocks BENCHPOINTS-style queries | yes (BR boxscores mark starters) |
-| ts_pct, efg_pct, fg3a_rate, fta_rate, orb_pct, drb_pct, trb_pct, ast_pct, stl_pct, blk_pct, tov_pct, usg_pct, ortg, drtg, bpm | ✓ (2023+ only) | high | yes, **back to 2001** (BR's coverage) |
+| ts_pct, efg_pct, fg3a_rate, fta_rate, orb_pct, drb_pct, trb_pct, ast_pct, stl_pct, blk_pct, tov_pct, usg_pct, ortg, drtg, bpm | ✓ (2023+ only) | high | **(Phase 0 revised)** advanced-box table present back to at least 1985 — revised from "back to 2001". Column-level population pre-2001 is **still TBD**: some metrics (bpm, ortg, drtg) require opponent-context computations that may have always been NULL in the early eras. Verify by inspecting 1985 G6's `box-LAL-game-advanced` row contents. |
 
 **Improvements over current state**: store `minutes_played` as decimal (e.g. 36.13 for 36:08) instead of rounded INT — fixes the team-minutes sanity-check mismatch. Add `is_starter` for bench-stat queries.
+
+### Player-quarter / player-half grain — NEW (Phase 0 surfaced 2026-05-20)
+
+BR exposes per-quarter and per-half player boxscores as separate visible tables on each boxscore page. Neither was in the original data inventory. Confirmed by 2010 G7 and 2024 SAS@MEM fetches; absent in 1995 G4 fetch. Boundary unpinned (catalog action item).
+
+| Field | Have today? | Value | BR availability |
+|---|---|---|---|
+| `box-{TTT}-q1-basic` … `q4-basic` (per-quarter player box: min/pts/ast/reb/etc.) | ✗ | medium — "best 4th-quarter scorers", verifies Phase 5 spot-check (Klay's 37-pt quarter) directly | **(Phase 0 verified)** present in 2010+ and 2024 fetches; **absent in 1995**. Boundary between 1995 and 2010 unpinned — see catalog task #8. |
+| `box-{TTT}-h1-basic`, `h2-basic` (per-half player box) | ✗ | low — derivable from quarters but BR pre-computes | same boundary as per-quarter. |
+
+**Scope decision deferred to Phase 0 reflection gate**: should `player_quarter_box` and `player_half_box` be new tables in `ZK_NBA_V2`? Tradeoff: cheap to flatten alongside the game box (already in HTML), but ~5x bloats the player-level row count (~ player-game × 6 grain).
 
 ### Game grain (`games`, `line_scores`)
 
@@ -76,12 +87,14 @@ Comprehensive list across three columns: *current state*, *value to the friend's
 | home/away_team_id, abbr, pts, wl | ✓ | core | yes |
 | home/away aggregates (fgm/fga/.../plus_minus) | ✓ | core | yes |
 | q1-q4 + ot1-ot4 per side | ✓ | core | yes (hidden line_score table) |
-| **attendance** | ✗ | medium | yes (meta block on boxscore page) |
-| **arena_name** (per-game) | ✗ | medium | yes (meta block) |
-| **start_time** (local TZ) | ✗ | low | yes |
-| **broadcast_network** (TNT, ESPN, ABC, etc.) | ✗ | medium — for "show me TNT Thursday games" queries | yes (when listed) |
-| **series_label** ("NBA Finals - Game 5", "Eastern Conference Finals - Game 3") | ✗ | high — playoff context | yes (page header text) |
-| **game_label** ("Christmas Day Game", "Opening Night") | ✗ | low | yes (sometimes in page metadata) |
+| **attendance** | ✗ | medium | **(Phase 0 verified)** yes from 1955+; ~100% NULL for the ~1947-1954 BAA era (first BAA game 1946-11-01 has no `<strong>Attendance:</strong>` block at all). Format: `<strong>Attendance:&nbsp;</strong>16,108` (note `&nbsp;` separator, not whitespace — HTML-decode before regex). |
+| **arena_name** (per-game) | ✗ | medium | **(Phase 0 revised — UNVERIFIED)** the literal `<strong>Arena:</strong>` label did not match in any sampled era (1947, 1955, 1965, 1975, 1985, 1995, 2010, 2024). Either BR uses a different DOM construct or this data isn't actually exposed on the boxscore page. **Investigation required before committing** — see `BR_DATA_CATALOG.md` task #9. May need to drop this column from rebuild scope. |
+| **start_time** (local TZ) | ✗ | low | **(Phase 0 not verified)** assume meta block; inspect DOM first. Time of Game (game duration) is confirmed at 1985+ as `<strong>Time of Game:&nbsp;</strong>2:24` but that's duration, not tipoff time. |
+| **broadcast_network** (TNT, ESPN, ABC, etc.) | ✗ | medium — for "show me TNT Thursday games" queries | **(Phase 0 revised — UNVERIFIED)** `<strong>TV:</strong>` did not match in any sampled era. Same investigation as `arena_name`. May need to drop from rebuild scope. |
+| **series_label** ("NBA Finals - Game 5", "Eastern Conference Finals - Game 3") | ✗ | high — playoff context | **(Phase 0 not verified)** my naive `<h2>...Game N...</h2>` regex didn't match on the 1995 / 2010 Finals fetches. The label may live in a different DOM element (page `<h1>`, breadcrumb, etc.). Inspect a playoff page's DOM before committing. |
+| **game_label** ("Christmas Day Game", "Opening Night") | ✗ | low | **(Phase 0 not verified)** inspect a special-game page meta (e.g., 2024 Christmas Day game) before committing. |
+
+**Phase 0 footnote on game-grain meta blocks** (2026-05-20): only **`attendance`** and **`time_of_game`** were positively located across the 8 era fetches. The other four enrichment columns are unverified — and three are *negatively* unverified (the expected `<strong>LABEL:</strong>` patterns did not appear). Before Phase 1 commits these columns to the V2 DDL, the catalog's "Locate arena_name and broadcast_network in raw HTML" action item must resolve where (if anywhere) they actually live in BR's HTML.
 
 ### Officials (`game_officials`)
 
@@ -199,7 +212,7 @@ Slice: **2024-25 Denver Nuggets** (~95 games incl. playoffs). Recent so coverage
 
 Tasks:
 - Create `ZK_NBA_V2` database + the minimum required schema: `games`, `player_box_basic`, `player_box_advanced`, `line_scores`, `players`, `teams`. (Skip game_officials, game_inactives, draft, pbp for this slice — add in later slices.)
-- DDL changes from V1: drop `source` columns; add `is_starter` BOOLEAN to `player_box_basic`; switch `minutes_played` to decimal; add `attendance`, `arena_name`, `series_label`, `broadcast_network` to `games`.
+- DDL changes from V1: drop `source` columns; add `is_starter` BOOLEAN to `player_box_basic`; switch `minutes_played` to decimal; add `attendance` to `games` (Phase 0 verified). **Defer `arena_name`, `series_label`, `broadcast_network`** until Phase 0's catalog action item locates their DOM source — Phase 0 regex did not find the expected `<strong>Arena:</strong>` / `<strong>TV:</strong>` labels in any sampled era. Adding columns we can't populate would just create NULL noise.
 - Build the minimum-viable backfill orchestrator: hardcode "Denver Nuggets, 2024-25 season" and walk the team-season page to enumerate game slugs.
 - Reuse `daily_settle.py`'s fetch/flatten/MERGE pipeline. Adapt for V2 schema.
 - Run the slice. ~95 games × 3s = ~5 minutes of crawling.
@@ -380,7 +393,7 @@ Copy-paste this template at the end of each phase. Append, don't overwrite — a
 
 ## Open questions for the next agent
 
-1. **Pre-1976 coverage**: does BR have per-player boxscores back to 1946-47, or only totals? Validated in Phase 1. If only totals, decide whether to keep JB for pre-1976 (compromise) or accept the loss.
+1. ~~**Pre-1976 coverage**: does BR have per-player boxscores back to 1946-47, or only totals?~~ **Resolved by Phase 0 (2026-05-20)**: BR has per-player basic boxscores back to the first BAA game (1946-11-01 NYK @ TRH returned two visible tables: `box-NYK-game-basic` and `box-TRH-game-basic`). No need to keep JB as a fallback for the very-old era. Open follow-up: confirm column-level completeness (min, pts, fgm, etc.) on the 1947 row — pre-shot-clock pre-3pt era — before Phase 1 schema commits.
 2. **Play-by-play scope**: include in Phase 3 (extends scrape time by ~48h) or defer to a Phase 7 follow-up? My recommendation: defer. PBP isn't required for the friend's core queries.
 3. **Shot chart data**: BR has shot-location data on separate `/boxscores/shot-chart/{slug}.html` pages. Highly valuable but means a third fetch per game. Recommendation: defer to follow-up.
 4. **player_id strategy**: BR slug as canonical, or NBA Stats API ID (resolved via BR player page's stats.nba.com external link)? My recommendation: keep the NBA Stats API ID strategy we built. It's already working, and gives us future cross-source compatibility if we ever want to join other NBA-Stats-derived datasets.
