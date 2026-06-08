@@ -37,7 +37,7 @@ Slug format: `YYYYMMDD0TTT` where `TTT` is the BR 3-letter home-team code.
 | Time of Game | meta block | game | **NEW — surfaced 2026-05-20 fetch** — `<strong>Time of Game:&nbsp;</strong>1:55` |
 | Arena | meta block | game | regular-season 2024 fetch: **absent**; verify on marquee / playoff games |
 | Broadcast network | meta block | game | regular-season 2024 fetch: **absent**; verify on TNT/ESPN games |
-| Series label | page header | playoff game only | not present on regular-season fetch; verify on playoff fetches |
+| Series label | page `<title>` + `<h1>` | playoff game only | **RESOLVED 2026-06-08** — lives in the `<title>`/`<h1>` text (`"2023 NBA Finals Game 5: …"`), NOT a `<strong>Label:</strong>` meta block. Parse round + game-number from `<h1>`. Authoritative structure also on the bracket page (see Phase 0 closeout findings below). |
 
 **Parsing gotcha** (recorded 2026-05-20): BR meta blocks use `&nbsp;` (HTML entity) between the label and the value, not whitespace. A future meta-block extractor must HTML-decode the chunk before regexing, or include `&nbsp;` in the separator pattern. `re.search(r'Attendance:</strong>\s*([\d,]+)', html)` returns `None` for this reason.
 
@@ -192,6 +192,36 @@ The plan's eight era-test points. Picks are **canonical / iconic games** so the 
 | `box-{TTT}-h1-basic`, `h2-basic` | 2010 | same boundary |
 | `meta.inactives` | 2010 | did not match in older eras (may be format diff) |
 | `meta.arena`, `meta.tv` | *never* | the literal `<strong>Arena:</strong>` / `<strong>TV:</strong>` label was not present in any sampled era — needs raw-HTML inspection to find where arena_name & broadcast_network actually live, if anywhere |
+
+---
+
+### Phase 0 closeout findings — round/series + stat-availability (2026-06-08)
+
+Two investigations via `dev/_phase0_probe.py` (read-only). Both feed `REBUILD_METHOD.md`.
+
+**A. Playoff round / series is fully recoverable (closes the FINALS gap).** Two clean sources:
+
+1. **Per-game** — the boxscore `<title>` and `<h1>` carry the full label: `"2023 NBA Finals Game 5: Miami Heat at Denver Nuggets Box Score, June 12, 2023"`. Round + game-number parse directly from `<h1>`. (The earlier `<h2>` regex missed it because the label is in `<title>`/`<h1>`, not a meta block.)
+2. **Authoritative structure** — the bracket page `/playoffs/NBA_{year}.html` has an `all_playoffs` table and series-page links whose slugs encode round + matchup explicitly:
+   - `/playoffs/2023-nba-finals-heat-vs-nuggets.html`
+   - `/playoffs/2023-nba-western-conference-finals-lakers-vs-nuggets.html`
+   - `/playoffs/2023-nba-eastern-conference-first-round-heat-vs-bucks.html`
+   - Round heading labels: `East Conf 1st Round`, `East Conf Semis`, `East Conf Finals`, `Finals`.
+
+*Design decision:* scrape the bracket page once per season → a `playoff_series` table `(season, round, series_slug, team_a, team_b, result, seeds?)`; tag each playoff game's `round` + `game_in_series` from its `<h1>` (and/or by joining to the series). `round` becomes a first-class, queryable value with `Finals` as a distinct label. This is the direct, durable fix for the bug that started the rebuild.
+
+**B. ⚠️ Stat-availability CANNOT be inferred from column presence — BR's column template is uniform across all eras.** Confirmed by cell-value inspection:
+
+| Season | `STL/BLK/ORB/DRB` cells | `TOV` cells | Meaning |
+|---|---|---|---|
+| 1972-73 (`197212010BAL`) | all `NaN` | all `NaN` | columns present, **data genuinely absent** |
+| 1974-75 (`197412010LAL`) | populated | `NaN` | steals/blocks/ORB tracked from 1973-74; turnovers not yet |
+
+A 1972-73 `box-*-game-basic` table *renders* `STL BLK TOV ORB DRB` headers, but every cell is `NaN`. So "the column exists" is **not** evidence the stat was tracked. Known NBA tracking-start seasons (domain ground truth, not scrapeable): **steals / blocks / offensive rebounds — 1973-74; turnovers — 1977-78; 3-pointers — 1979-80.**
+
+*Design decision:* `metric_coverage` (per `REBUILD_METHOD.md` §3) is **authored from these domain breakpoints and verified against cell population** — never auto-derived from the scrape. The flatten step must treat a blank pre-tracking cell as *not-applicable* (governed by the no-ambiguous-NULL invariant), never coerce it to `0`. This is the stat-level instance of the FINALS-class ontology gap.
+
+*Era-template note:* the basic-box first-column header is `Player` pre-1974 and `Starters` from ~1974; `GmSc` (Game Score, derived) appears from ~1978-79. (Minor flatten-parsing detail.)
 
 ---
 
