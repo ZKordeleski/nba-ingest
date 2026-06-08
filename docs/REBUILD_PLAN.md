@@ -206,6 +206,47 @@ Tasks:
 
 ---
 
+## Phase 0 Reflection — 2026-06-08
+
+Phase 0's telos: *catalog what BR actually exposes before committing any schema, so Phase 1 builds on evidence, not assumption.* Closeout done per `REBUILD_METHOD.md` contract.
+
+### Run the test (definition of success: every empirical question Phase 1 depends on is answered with a real fetch)
+
+| Question | Result |
+|---|---|
+| Where does BR encode the **playoff round/series** (the FINALS gap)? | **Answered.** Boxscore `<h1>`/`<title>` (`"2023 NBA Finals Game 5"`) + bracket page `/playoffs/NBA_{year}.html` round-encoded series slugs. Round becomes first-class. |
+| Can we infer **stat-availability** from BR's columns? | **Answered — no.** Column template is uniform across eras; 1972-73 shows `STL/BLK/TOV` headers with all-`NaN` cells. Availability = cell population + domain breakpoints (STL/BLK/ORB 1973-74, TOV 1977-78, 3P 1979-80). |
+| `arena_name` / `broadcast_network`? | **Answered.** Arena is in `scorebox_meta` (pipe segment); broadcast network is absent → dropped. |
+| Advanced-box era + population? | **Answered.** Tables and `TS%/USG%/ORtg/DRtg/BPM` populated back to ≥1985. |
+| Per-quarter boundary? | **Answered.** ≤2001 (present 2001 & 2005, absent 1995). |
+| Crawl-delay? | **Answered.** `robots.txt` = 3s, matches the client. |
+
+**Not exhaustively done (deliberate):** §1.3 breadth inventory of secondary page types (awards, standings, draft, coaches). These feed the "new tables" decision, which is a later slice — cataloging them now would be exploring pages we won't build against for a while. Decision: **catalog them just-in-time** when their slice arrives, not as a Phase 1 blocker.
+
+### Reflect against goals and values
+
+- **Single source** held up: BR has per-player basic boxscores back to the first BAA game (1946-11-01), so we never need a second source. The whole V1 bug class is designed out.
+- **Ontology-grounding earned its keep:** the stat-availability trap (finding B) is invisible to pure data inspection — only basketball knowledge (when the NBA started tracking each stat) reveals it. Exactly the "don't model data for data's sake" value. We'd have shipped "Russell: 0 steals" without it.
+- **Fail-loud** now has a concrete first target: blank pre-tracking cells must never coerce to 0.
+- No walls required a values-diverging pivot.
+
+### Favors for future-us
+
+- `metric_coverage` methodology pinned down (author from domain breakpoints, verify against cells — never auto-derive). The biggest favor.
+- Round/series sourcing decided and documented, so Phase 1 can implement the FINALS fix directly.
+- Corrected a false negative (arena "never" → it's in `scorebox_meta`), saving the next person a wrong scoping call.
+
+### Reflection-gate decisions
+
+1. **Data-inventory updates:** advanced ≥1985 (done); `arena_name` → **include** (scorebox_meta); `broadcast_network` → **drop**; **add** a `round`/`series` dimension (`playoff_series` table + `games.round`, `games.game_in_series`); **add** `metric_coverage`; `player_quarter_box` → **include** as a 2001+ table; `minutes_played` → decimal; `is_starter` → derive from row position vs. the "Reserves" separator.
+2. **New tables — include vs defer:** Phase 1 = **core only** (`games`, `player_box_basic`, `player_box_advanced`, `line_scores`, `players`, `teams`) **+ round/series + `metric_coverage`**. Defer `standings`/`awards`/`all_stars`/`all_nba`/`season_leaders`/`coaches` to a later slice (cheap, ~1 page/season, but not needed for the core box-score/Finals goal). Defer shot-charts + PBP to Phase 7.
+3. **Pre-1976 coverage:** **BR-only, no JB fallback.** Confirmed BR coverage to 1946; single-source is the point. Thin old-era coverage is documented honestly via `metric_coverage`, not patched with a second source.
+4. **Phase 1 scope:** unchanged slice (2024-25 Denver Nuggets, ~95 games incl. their 2025 playoff run) — but the **test must assert correct `round` tagging on their 2025 playoff series**, the basketball-truth check that the current DB fails.
+
+> ✋ **Gate: paused for sign-off.** No Snowflake writes until these decisions are approved and the Phase 1 charter is agreed (per chosen cadence).
+
+---
+
 ### Phase 1 — Vertical slice: one team, one recent season (~1 session, ~3-4 hours)
 
 **Goal**: prove the end-to-end pipeline works on a narrow, contained scope. Build the minimum viable plumbing for ONE team's ONE recent season — everything from fetch to query.
