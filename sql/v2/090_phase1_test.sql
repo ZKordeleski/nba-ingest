@@ -33,7 +33,7 @@ recon AS (
 )
 SELECT * FROM (
     -- ── coverage / schema ────────────────────────────────────────────────
-    SELECT 1 AS ord, 'metric_coverage seeded' AS check,
+    SELECT 1 AS ord, 'metric_coverage seeded' AS check_name,
            (SELECT COUNT(*) FROM metric_coverage) >= 17 AS passed,
            'rows=' || (SELECT COUNT(*) FROM metric_coverage) AS detail
 
