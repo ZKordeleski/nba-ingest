@@ -1,0 +1,54 @@
+name: V2 Historical Backfill
+
+# Phase 4: fill ZK_NBA_V2 with NBA history via the checkpoint-resumable season
+# loader (dev/_backfill.py -> dev/_load_season.py). Manually dispatched in chunks.
+#
+# Chunk sizing: a GHA job caps at 6h. At BR's 3s crawl-delay that's ~7,000 fetches.
+# Modern seasons are ~1,300 games (30 teams) so ~5 seasons/chunk; pre-1977 seasons
+# are smaller (~700 games) so ~8/chunk. Over-running is SAFE — the per-season
+# checkpoint means re-dispatching the same range resumes (skips loaded games).
+# Each chunk runs the audit at the end to surface any new era anomaly.
+#
+# Prereq: ZK_NBA_V2 schema + metric_coverage seeded (sql/v2/010,020,030,040).
+# 2024-25 (Phase 2) and 1972-73 (Phase 3) are already loaded and will no-op.
+
+on:
+  workflow_dispatch:
+    inputs:
+      from_season:
+        description: 'First season end-year (e.g., 1970 = 1969-70)'
+        required: true
+      to_season:
+        description: 'Last season end-year, inclusive (e.g., 1979)'
+        required: true
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350  # ~5h50m, under GHA's 6h hard limit; checkpoint resumes if killed
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install -e .
+      - name: Backfill season range
+        env:
+          SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+          SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
+          SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_DATABASE: ZK_NBA_V2
+        run: python dev/_backfill.py --from ${{ inputs.from_season }} --to ${{ inputs.to_season }}
+      - name: Audit (surface anomalies in the loaded range)
+        if: always()  # run even if backfill timed out, to profile what landed
+        env:
+          SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+          SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
+          SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_DATABASE: ZK_NBA_V2
+        run: python dev/_audit.py
