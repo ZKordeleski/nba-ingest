@@ -25,14 +25,16 @@ INSERT INTO metric_coverage (metric, column_ref, first_tracked_season, status, n
     ('ast',  'player_box_basic.ast',                   NULL, 'always',         NULL, 'tracked since 1946-47'),
     ('pf',   'player_box_basic.pf',                    NULL, 'always',         NULL, 'tracked since 1946-47'),
     -- The 1973-74 tracking expansion.
-    ('stl',  'player_box_basic.stl',                   1974, 'tracked_from',   'not recorded (NOT zero)', 'NBA official: steals became an official stat in 1973-74'),
-    ('blk',  'player_box_basic.blk',                   1974, 'tracked_from',   'not recorded (NOT zero)', 'NBA official: blocks became an official stat in 1973-74'),
-    ('oreb', 'player_box_basic.oreb',                  1974, 'tracked_from',   'not recorded (NOT zero)', 'NBA official: offensive rebounds split out in 1973-74'),
-    ('dreb', 'player_box_basic.dreb',                  1974, 'tracked_from',   'not recorded (NOT zero)', 'NBA official: defensive rebounds split out in 1973-74'),
-    -- Turnovers: 1977-78.
-    ('tov',  'player_box_basic.tov',                   1978, 'tracked_from',   'not recorded (NOT zero)', 'NBA official: turnovers became an official stat in 1977-78'),
-    -- The 3-point line: 1979-80.
-    ('fg3',  'player_box_basic.fg3m/fg3a',             1980, 'tracked_from',   'did not exist (NOT zero) — no 3-pt line before 1979-80', 'NBA official: 3-point line introduced in 1979-80'),
+    -- RAMP, not cliff: these stats EXISTED but were only sporadically recorded
+    -- before the league-wide official season (Phase 3 survivor analysis found
+    -- real but sparse pre-1974 steals/blocks/turnovers in BR — e.g. Wilt's blocks).
+    ('stl',  'player_box_basic.stl',                   1974, 'official_complete_from', '(near-)complete from 1973-74; sporadic earlier (BR partial). A present pre-1974 value is REAL; a NULL is not-recorded-this-game, never 0.', 'NBA official 1973-74; ramp not cliff (Phase 3)'),
+    ('blk',  'player_box_basic.blk',                   1974, 'official_complete_from', '(near-)complete from 1973-74; sporadic earlier. Present=REAL; NULL=not-recorded, never 0.', 'NBA official 1973-74; ramp (Phase 3)'),
+    ('oreb', 'player_box_basic.oreb',                  1974, 'official_complete_from', '(near-)complete from 1973-74; sporadic earlier. Present=REAL; NULL=not-recorded, never 0.', 'NBA official 1973-74; ramp (Phase 3)'),
+    ('dreb', 'player_box_basic.dreb',                  1974, 'official_complete_from', '(near-)complete from 1973-74; sporadic earlier. Present=REAL; NULL=not-recorded, never 0.', 'NBA official 1973-74; ramp (Phase 3)'),
+    ('tov',  'player_box_basic.tov',                   1978, 'official_complete_from', '(near-)complete from 1977-78; sporadic earlier (BR partial). Present=REAL; NULL=not-recorded, never 0.', 'NBA official 1977-78; ramp (Phase 3)'),
+    -- CLIFF: the 3-point shot did not exist before 1979-80 (contrast the ramp stats above).
+    ('fg3',  'player_box_basic.fg3m/fg3a',             1980, 'did_not_exist_before', 'the 3-point line DID NOT EXIST before 1979-80; NULL=not-applicable, never 0.', 'NBA official: 3-point line introduced 1979-80 (true cliff)'),
     -- BR-published derived/aux metrics.
     ('game_score',        'player_box_basic.game_score', 1979, 'br_published_from', 'BR did not publish GmSc before ~1978-79', 'BR publication boundary'),
     ('player_box_advanced','player_box_advanced.*',       1985, 'br_published_from', 'BR advanced box table not published before ~1985; derivable metrics inherit their inputs', 'BR publication boundary (Phase 0 verified)'),

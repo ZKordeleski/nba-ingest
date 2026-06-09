@@ -20,7 +20,7 @@ USE WAREHOUSE NBA_INGEST_WH;
 -- so the answer is self-documenting. This is what turns "store NULL correctly"
 -- into "answer truthfully".
 CREATE OR REPLACE VIEW vw_career_steals_leaders
-COMMENT = 'Career steals leaders scoped to the era steals were tracked (1973-74+, from FLAT.metric_coverage). Pre-1974 careers are excluded by design, not summed as 0. Demonstrates coverage-aware aggregation; consumers should ORDER BY career_steals DESC. Add analogous views (blocks, turnovers, 3P) the same way as needed.'
+COMMENT = 'Career steals leaders scoped to the (near-)complete era from FLAT.metric_coverage (1973-74+). Sporadic pre-1974 steals exist in the data (a ramp, not a cliff — Phase 3) but are excluded here for COMPARABILITY: partial-coverage seasons would make unfair career totals, not because the values are zero. Demonstrates coverage-aware aggregation; consumers ORDER BY career_steals DESC. Add analogous views (blocks/turnovers/3P) the same way.'
 AS
 WITH cov AS (
     SELECT first_tracked_season AS from_season
