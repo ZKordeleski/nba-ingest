@@ -449,7 +449,7 @@ ALTER DATABASE ZK_NBA_V2 RENAME TO ZK_NBA;
 ```
 
 - Same Snowflake account, role, warehouse, DB name post-rename. **No GHA secret changes needed.**
-- Update `daily_settle.py` only if it was hardcoded to `ZK_NBA_V2` during Phase 1; otherwise it just continues against the renamed DB.
+- ⚠️ **BLOCKER — the daily cron must be on V2 logic BEFORE this rename.** `daily_settle.py` is V1 code (the `LEFT(game_id,1)` season_type/round bug). A rename alone leaves the cron writing *new* games into the renamed DB with the old broken logic — silently re-introducing the exact bug the rebuild fixed, one day after cutover. Cutover prerequisite: ship the V2 daily-ingest "settle today" path (Deferred backlog → "V2 daily-ingest path") on the `_load_season.py` spine, point the cron at it, then rename. This is the difference between a fixed dataset and a fixed *pipeline*.
 - Restart daily cron (it'll fire next at 8:30 UTC).
 
 **Reflection gate ✋**
@@ -501,6 +501,10 @@ Single source of truth for everything we consciously *chose not to build yet*. A
 | `teams` table + NBA-Stats `team_id` bridge | team | V2 uses BR abbr as canonical team id; the NBA-id bridge is only for cross-dataset joins | cross-dataset joins, or "best team ever" work | Deferred |
 | NBA Cup Championship game ingestion | game · Cup bracket / date-index | team-season pages omit the Cup final (only Cup game not counting toward reg-season stats); found as the Phase 2 V1-parity delta (`202412170OKC`) | NBA Cup queries, or full-parity pass | Deferred |
 | Transient vs permanent quarantine | (orchestrator) | a network-error quarantine is currently treated as "done" by the checkpoint, so it won't auto-retry | Phase 3 (long historical runs need self-healing retries) | Deferred |
+| **V2 daily-ingest path (`settle` mode)** | orchestrator · `_load_season.py` spine | **Cutover prerequisite**: the current daily cron is V1 (`daily_settle.py` with the `LEFT(game_id,1)` bug); after rename it would write new games with the old broken logic and re-introduce the season_type/round bug. Needs a "settle today" mode on the V2 spine. | **Before Phase 6 cutover** | Deferred |
+| Coverage-aware guardrail views (per stat) | `DERIVED.*` · joins `metric_coverage` | `vw_career_steals_leaders` seeds the pattern; blocks/tov/3P/leaders want the same era-scoping so aggregations never sum a not-tracked NULL as 0 | when a leaderboard / career-total query class is needed | Seeded (steals) |
+| Reload-on-fix path for loaders | orchestrator | checkpoint skips already-loaded `game_id`s, so a flatten fix does NOT propagate to loaded games without manual deletion; want a `--reload` / logic-version stamp | when a flatten bug is fixed after a load | Deferred |
+| Agent-harness golden-truth tests (cross-repo) | agentic harness, NOT this repo | external basketball truths (1973 Finals = NYK champ; Wilt 100 = 1962; Dyson Daniels led steals 2024-25) belong as **agent-level** tests run by the harness against these DBs — the real proof of the goal, vs. SQL assertions here | cutover / harness work | Deferred |
 
 > Phase 7 ("Cleanup + deferred enrichments") draws its worklist from this table — it is not a separate list. If you prefer external tracking, these rows map 1:1 to GitHub issues; say the word and I'll file them.
 
