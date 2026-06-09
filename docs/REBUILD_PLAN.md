@@ -500,6 +500,9 @@ Then built **`dev/_audit.py`** — the standing anomaly-surfacing gate (`REBUILD
 
 **Goal**: populate everything else.
 
+**Pre-backfill boundary probe (do FIRST — cheap insurance before the multi-day run):**
+Before triggering the full scrape, probe a few games (in-memory, no load) from the *riskiest untested era boundaries* so a systematic spine bug is caught in minutes, not after 5 days of scraping + a re-scrape. Done 2026-06-09 for 1950 (BAA), 1965 (Division-playoff), 1980 (3P): parse/guard/reconcile clean across all; `is_starter` correctly NULL pre-separator; Finals tagged in every era. Caught + fixed one gap — `fetch_playoff_series` didn't classify pre-1971 `division-semifinals`/`division-finals` slugs (games' `round` was right from the `<h1>`, but series didn't link). Generalize this: any future bulk run gets a boundary probe first.
+
 Tasks:
 - Run remaining decades in parallel GHA workflows: 1946-1959, 1960s, 1980s, 1990s, 2000s, 2010s, 2020s.
 - Run the additional-table scrapes (the "new tables" from data inventory): standings (~80 pages), awards (~80 pages), all_stars (~80 pages), season_leaders (~80 pages), coaches (~400 pages), franchise pages (~30 pages). Total ~700 pages × 3s = ~35 min.

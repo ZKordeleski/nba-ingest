@@ -244,14 +244,18 @@ def fetch_playoff_series(season: int) -> list[dict]:
         round_, seq = None, None
         if "conference-semifinals" in s:
             round_, seq = "Conference Semifinals", 2
+        elif "division-semifinals" in s:        # pre-1971 used divisions, not conferences
+            round_, seq = "Division Semifinals", 2
         elif "conference-finals" in s:
             round_, seq = "Conference Finals", 3
+        elif "division-finals" in s:
+            round_, seq = "Division Finals", 3
         elif "first-round" in s:
             round_, seq = "First Round", 1
-        elif re.search(r"nba-finals", s):
-            round_, seq = "Finals", 4
         elif "play-in" in s:
             round_, seq = "Play-In", 0
+        elif re.search(r"nba-finals", s):       # bare "...-nba-finals-..." (checked last)
+            round_, seq = "Finals", 4
         conf = "Eastern" if "eastern" in s else ("Western" if "western" in s else None)
         m = re.search(r"-([a-z0-9]+)-vs-([a-z0-9-]+)$", s)
         ta, tb = (m.group(1), m.group(2)) if m else (None, None)
