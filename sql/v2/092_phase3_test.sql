@@ -70,5 +70,14 @@ SELECT * FROM (
            (SELECT COUNT(*) FROM game_officials go JOIN g73 g ON go.game_id=g.game_id) = 0
            AND (SELECT COUNT(*) FROM metric_coverage WHERE metric='game_officials') = 1,
            'officials_1973=' || (SELECT COUNT(*) FROM game_officials go JOIN g73 g ON go.game_id=g.game_id)
+    -- gut-check additions: is_starter CORRECTNESS (not just presence) + series_slug match
+    UNION ALL SELECT 11, 'is_starter correct: per-team count is 5 (separator present) or 0 (absent->all NULL)',
+           (SELECT COUNT(*) FROM (SELECT game_id, team_abbr, COUNT_IF(is_starter) n
+              FROM player_box_basic WHERE season=1973 GROUP BY 1,2) WHERE n NOT IN (0,5)) = 0,
+           'team_games_with_bad_starter_count=' || (SELECT COUNT(*) FROM (SELECT game_id, team_abbr, COUNT_IF(is_starter) n
+              FROM player_box_basic WHERE season=1973 GROUP BY 1,2) WHERE n NOT IN (0,5))
+    UNION ALL SELECT 12, 'playoff series_slug matched for known-franchise games (<=2 unmatched)',
+           (SELECT COUNT(*) FROM g73 WHERE round IS NOT NULL AND round<>'Play-In' AND series_slug IS NULL) <= 2,
+           'unmatched_playoff=' || (SELECT COUNT(*) FROM g73 WHERE round IS NOT NULL AND round<>'Play-In' AND series_slug IS NULL)
 )
 ORDER BY ord;

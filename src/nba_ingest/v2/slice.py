@@ -121,36 +121,43 @@ def parse_arena(soup: BeautifulSoup) -> tuple[str | None, str | None, str | None
     return None, None, None
 
 
-def _starters(basic_df) -> set[str]:
+def _starters(basic_df):
+    """Names above the 'Reserves' separator. Returns None (unknown) if there is
+    NO separator — some old box scores (Phase 3: ~28% of 1972-73) omit it, and
+    marking the whole roster as starters would be wrong. None => is_starter NULL."""
     df = _flatten_columns(basic_df.copy())
     col = df.columns[0]
     out: set[str] = set()
+    saw_reserves = False
     for val in df[col]:
         s = str(val).strip()
         if s == "Reserves":
+            saw_reserves = True
             break
         if s and s not in ("Starters", "nan") and "Team Totals" not in s:
             out.add(s)
-    return out
+    return out if saw_reserves else None
 
 
 # ───────────────────────────────────────────────────────────── flatten
 def flatten_basic(slug, team_abbr, df, is_home, is_win, season, season_type, anchors):
     if df is None or df.empty:
         return []
-    starters = _starters(df)
+    starters = _starters(df)  # None => separator absent => is_starter unknown (NULL)
     d = _drop_totals_row(_flatten_columns(df.copy()))
     rows = []
     for _, r in d.iterrows():
         name = str(r.get("Player", r.iloc[0])).strip()
+        pid = anchors.get(name) or name
         # Parse each stat directly. _safe_int returns None for genuine "Did Not
         # Play" cells AND for not-tracked columns (e.g. STL pre-1973-74). Do NOT
         # infer DNP from missing minutes: pre-~1985 box scores omit MP for players
         # who clearly played (a 39-pt NaN-MP line is not a DNP). Zeroing on
         # missing MP was an era bug that 1972-73 exposed.
         rows.append({
-            "game_id": slug, "player_id": anchors.get(name) or name, "player_name": name,
-            "team_abbr": team_abbr, "is_home": is_home, "is_starter": name in starters,
+            "game_id": slug, "player_id": pid, "player_name": name,
+            "team_abbr": team_abbr, "is_home": is_home,
+            "is_starter": (name in starters) if starters is not None else None,
             "is_win": is_win, "season": season, "season_type": season_type,
             "minutes_played": _parse_minutes(r.get("MP")),
             "pts": _safe_int(r.get("PTS")), "ast": _safe_int(r.get("AST")), "reb": _safe_int(r.get("TRB")),
@@ -255,12 +262,15 @@ def fetch_playoff_series(season: int) -> list[dict]:
 
 
 def match_series(round_, home_abbr, away_abbr, series_rows):
-    """Find the series_slug for a playoff game by round + both teams' nicknames."""
+    """series_slug for a playoff game by round + EITHER team's nickname. A team
+    plays one series per round, so one known nickname suffices — robust to old
+    franchises absent from TEAM_NICKNAMES (Phase 3: NYK vs BAL Bullets failed when
+    both were required)."""
     if not round_:
         return None
-    hn, an = TEAM_NICKNAMES.get(home_abbr), TEAM_NICKNAMES.get(away_abbr)
+    nicks = [n for n in (TEAM_NICKNAMES.get(home_abbr), TEAM_NICKNAMES.get(away_abbr)) if n]
     for s in series_rows:
-        if s["round"] == round_ and hn and an and hn in s["series_slug"] and an in s["series_slug"]:
+        if s["round"] == round_ and any(n in s["series_slug"] for n in nicks):
             return s["series_slug"]
     return None
 
@@ -294,6 +304,11 @@ def build_game(slug, season, series_rows):
     home_win = game_row["home_pts"] > game_row["away_pts"]
     basics = (flatten_basic(slug, home, hb, True, home_win, season, season_type, anchors)
               + flatten_basic(slug, away, ab, False, not home_win, season, season_type, anchors))
+    # NOTE: do NOT dedup by player_id here. Two distinct players can share a
+    # resolved slug when they have identical display names in one game (Phase 3:
+    # two "George Johnson"s, GSW vs HOU). Dedup would drop a real player and break
+    # reconciliation. The collision (rare) is a Deferred-backlog fix (per-row slug
+    # resolution), not a dedup.
     violations = guard(game_row, basics)
     if violations:
         return ("quarantine", "; ".join(violations[:5]))
