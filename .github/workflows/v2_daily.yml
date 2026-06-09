@@ -1,0 +1,43 @@
+name: V2 Daily Settle
+
+# Cutover-correct daily ingest for ZK_NBA_V2 — the replacement for the V1
+# daily_settle cron (which carries the LEFT(game_id,1) bug). Settles the last 2
+# days (catches late-posted box scores) through the shared v2 spine: correct
+# season_type/round, bad-data guard, NULL discipline. Checkpoint => safe re-runs.
+#
+# MANUAL (workflow_dispatch) for now — at CUTOVER, add the `schedule` block below
+# and disable the V1 daily_settle cron, so new games keep flowing correctly into
+# the renamed DB instead of reintroducing the V1 bug.
+#
+# At cutover, enable the daily schedule:
+#   schedule:
+#     - cron: '0 9 * * *'   # 09:00 UTC, after the (then-retired) V1 cron
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: 'Settle the last N days'
+        required: false
+        default: '2'
+
+jobs:
+  settle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install -e .
+      - name: Settle recent games
+        env:
+          SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+          SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
+          SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_DATABASE: ZK_NBA_V2
+        run: python dev/_settle.py --days ${{ inputs.days }}
