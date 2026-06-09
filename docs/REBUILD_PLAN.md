@@ -334,6 +334,48 @@ Tasks:
 - Any per-team data oddities (relocated teams, mid-season team changes)?
 - Schema still right after a full season's worth of data?
 
+## Phase 2 Reflection — 2026-06-08
+
+Telos: scale from one team to all 30; prove throughput, schema robustness, and that the *actual* 2025 Finals are findable.
+
+### Run the test
+
+`sql/v2/091_phase2_test.sql` — **all 12 assertions pass.** 1,320 games (all 30 teams), 2,588→~31K box rows, 1,320 games with officials, 11,074 inactive rows, **0 quarantined** (after recovering 1 transient network failure with a targeted re-fetch).
+
+| | Check | Result |
+|---|---|---|
+| 1-2 | 1,320 games, all 30 teams | ✓ |
+| 3 | **2025 Finals present + labeled `round='Finals'` (7 games)** | ✓ |
+| 4 | all canonical rounds (Play-In, First Round, Conf Semis, Conf Finals, Finals) | ✓ |
+| 5 | no playoff game mislabeled Regular Season | ✓ |
+| 6-7 | domain guard clean; team totals reconcile | ✓ (0 / 0) |
+| 8-9 | officials for all 1,320 games; 11,074 inactives | ✓ |
+| 10 | parity vs V1 season=2025 | ✓ (v2=1320, v1=1321 — delta explained below) |
+| 11-12 | metric_coverage intact (17); quarantine rate | ✓ (0) |
+
+**The headline**: the query that started the rebuild — "describe the Finals game" — now resolves to **OKC 103, IND 91, Finals Game 7** (the 2025 title clincher). Not just labeled queryable, the *real* Finals.
+
+### Reflect against goals and values
+
+- **Throughput held**: ~1,320 games at the 3s crawl-delay (~70 min) with per-batch commits + game-level checkpointing. Proven resumable when 1 game failed transiently — recovered with a targeted re-fetch, no full re-scrape.
+- **The guard's first real all-teams test**: quarantined exactly 1 game, and *correctly* — a `ConnectionReset`, not bad data. Zero false quarantines, zero bad rows loaded. Quarantine-not-poison works as designed.
+- **Single source held at scale** — every id BR-native across 30 teams.
+- **We investigated the parity delta instead of waving it through** (the value in action): the 1 missing game is the **2024 NBA Cup Championship** (`202412170OKC`, MIL def. OKC). BR omits the Cup final from team-season game pages because it's the one Cup game not counting toward regular-season stats — a real competition-context ontology edge (our audit's "NBA Cup" row), not a bug.
+- One subtlety found: a quarantine from a *transient* error is treated as "done" by the checkpoint, so it won't auto-retry. Acceptable (a re-run with the quarantine row cleared retries it, which is what we did), but Phase 3's longer runs want an explicit transient-vs-permanent quarantine distinction.
+
+### Favors for future-us
+
+- The recovery path (clear quarantine row → targeted re-fetch) is proven; Phase 3/4 will need it.
+- NBA Cup final gap is documented + backlogged with the fix.
+- `src/nba_ingest/v2/slice.py` carried all-teams scale unchanged — ready for Phase 3's historical eras.
+
+### Open for Phase 3
+
+- The hard part: pre-modern eras. `metric_coverage`'s pre-tracking NULLs (no steals pre-1974, no 3P pre-1980) get their first real exercise; `is_starter`, `attendance`, franchise relocations, and the guard all face data they've never seen.
+- Distinguish transient vs permanent quarantines so long runs self-heal.
+
+> ✋ **Gate: paused for sign-off before Phase 3.**
+
 ---
 
 ### Phase 3 — Vertical slice: one historical decade (~1 session + GHA wall time)
@@ -457,6 +499,8 @@ Single source of truth for everything we consciously *chose not to build yet*. A
 | College career stats | (player, season) · player page | Out of core scope | pre-NBA / draft-prospect queries | Deferred |
 | `players` bio table | player · BR player page | Needs a per-player page fetch; not in the Phase 1 boxscore-only slice | Phase 2, or any bio/age/college query | Deferred |
 | `teams` table + NBA-Stats `team_id` bridge | team | V2 uses BR abbr as canonical team id; the NBA-id bridge is only for cross-dataset joins | cross-dataset joins, or "best team ever" work | Deferred |
+| NBA Cup Championship game ingestion | game · Cup bracket / date-index | team-season pages omit the Cup final (only Cup game not counting toward reg-season stats); found as the Phase 2 V1-parity delta (`202412170OKC`) | NBA Cup queries, or full-parity pass | Deferred |
+| Transient vs permanent quarantine | (orchestrator) | a network-error quarantine is currently treated as "done" by the checkpoint, so it won't auto-retry | Phase 3 (long historical runs need self-healing retries) | Deferred |
 
 > Phase 7 ("Cleanup + deferred enrichments") draws its worklist from this table — it is not a separate list. If you prefer external tracking, these rows map 1:1 to GitHub issues; say the word and I'll file them.
 
