@@ -397,6 +397,43 @@ Tasks:
 - Were there franchise-name complications (Cincinnati Royals → Kansas City Kings, etc.)?
 - Anything else era-specific that breaks assumptions?
 
+## Phase 3 Reflection — 2026-06-09
+
+Telos: stress-test era handling on the hard part (history). Slice: **1972-73** (the pre-tracking boundary season). It surfaced two distinct problems — one the guard caught, one only survivor analysis caught.
+
+### Run the test
+
+`sql/v2/092_phase3_test.sql` — **all 10 assertions pass.** 738 games loaded into the *same* schema as 2025; 1973 Finals labeled (5 games, NYK champs); domain guard + reconciliation clean; both eras coexist in one table.
+
+### Finding 1 — era parse bug (the guard caught it)
+
+44 games quarantined on team-total reconciliation: every player parsed as 0 points. Root cause: pre-~1985 box scores omit `MP` for players who clearly played (Maravich, 39 pts, MP=NaN), and the flattener inferred "Did Not Play" from missing minutes and **zeroed real stats**. The guard converted silent corruption into a loud, contained quarantine. Fixed (parse stats directly; never infer DNP from minutes); verified the fix resolves **44/44** quarantines exhaustively, not by sampling.
+
+### Finding 2 — coverage model error (only survivor analysis caught it)
+
+The games that *passed* the guard encoded a wrong belief. My Phase 0 generalization from n=2 sample games — "pre-1974 has no steals/blocks" — was wrong at n=738: BR has **sparse but real** 1972-73 steals/blocks/turnovers (0.2-0.6% present; Wilt's blocks, Haywood's steals — plausible, season-spread, *not* corruption — verified by value plausibility + sparsity ruling out misalignment). The era boundary is a **ramp, not a cliff**. Corrected `metric_coverage` accordingly (and distinguished it from `fg3`, which IS a true cliff — the line didn't exist). The data was never corrupt; my model of it was.
+
+### Reflect against goals and values
+
+- **Loud-failing is necessary but not sufficient.** The guard catches missing/impossible data; it cannot catch a *plausible-but-wrong belief* baked into data that loads cleanly. Survivor analysis (inspecting what passed, per Zack's prompt) is the complement — and it found the deeper error. New durable practice: every era slice gets a survivor pass, not just a quarantine review.
+- **Small samples over-generalize.** Phase 0's n=2 became a registry "fact." The fix is to treat Phase-0-era findings as *hypotheses* until a full-season load confirms them — which is exactly what slicing did.
+- **Single source / single schema held**: 1972-73 dropped into the identical tables (validated the grain-not-era table rule now in REBUILD_METHOD §3).
+- No values-diverging pivot; the parse fix and model correction both moved *toward* the telos.
+
+### Favors for future-us
+
+- `metric_coverage` now distinguishes **ramp** (recording coverage: stl/blk/tov) from **cliff** (existence: fg3) — a sharper model for every future era query.
+- `dev/_load_season.py` + schedule enumeration is the proven backfill spine (handles defunct franchises, 404 months, transient retries, checkpoint resume).
+- The DNP-from-minutes bug is a known era trap, documented in the flattener.
+
+### Open for Phase 4 (full backfill)
+
+- A clean full reload with the *final* flattener (the modern 2025 rows predate the DNP fix — cosmetic DNP-representation drift; reload-on-fix backlog covers it; Phase 4 normalizes everything).
+- Pre-1971 seasons: Division (not Conference) playoff rounds (handled in code, untested); BAA-era meta gaps.
+- Sustained multi-day GHA runs (this 738-game season was ~37 min; the full history is ~3-5 days).
+
+> ✋ **Gate: paused for sign-off before Phase 4 (the multi-day full backfill).**
+
 ---
 
 ### Phase 4 — Full historical backfill (~3-5 days wall time, ~0 active effort)
