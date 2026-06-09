@@ -432,6 +432,17 @@ The games that *passed* the guard encoded a wrong belief. My Phase 0 generalizat
 - Pre-1971 seasons: Division (not Conference) playoff rounds (handled in code, untested); BAA-era meta gaps.
 - Sustained multi-day GHA runs (this 738-game season was ~37 min; the full history is ~3-5 days).
 
+### Post-gate survivor + audit pass (2026-06-09)
+
+A survivor-bias sweep on the *landed* 1973 data (inspecting what PASSED, not just what failed) found three more era issues the tests had missed — all fixed:
+- **is_starter**: ~28% of 1973 team-games lack BR's "Reserves" separator → whole roster was marked starter. Fixed (`None` when absent); test strengthened to assert per-team count ∈ {0,5}.
+- **series_slug**: 5 NYK-vs-BAL (Baltimore Bullets) playoff games unmatched (BAL isn't a current franchise) → `match_series` now matches on *either* nickname.
+- **"George Johnson" ×2** (GSW vs HOU, same game): two *distinct* players colliding on one resolved slug — NOT a duplicate; a naive dedup dropped a real player and the reconciliation guard caught it. Kept both; backlogged per-row slug resolution.
+
+1973 reloaded with the fixes; **all 12 strengthened assertions pass.**
+
+Then built **`dev/_audit.py`** — the standing anomaly-surfacing gate (`REBUILD_METHOD §7`), the systematic answer to "what else did we miss?". Definitive run on full 1973+2025: **2 flags, 42 green** — both flags adjudicated (the George-Johnson collision [known, backlogged]; `arena_state` sparse pre-modern [old `scorebox_meta` omits state, accepted]). The reactive survivor treadmill is replaced by an automatic, coverage-aware detector that converges.
+
 > ✋ **Gate: paused for sign-off before Phase 4 (the multi-day full backfill).**
 
 ---
