@@ -118,7 +118,20 @@ Snowflake column comments and the `metric_coverage` table are written *for the a
 
 ---
 
-## 7. Where this connects
+## 7. The audit: systematic anomaly surfacing (the survivor-bias answer)
+
+Loud-failing (the guard) catches *missing/impossible* data; it cannot catch a *plausible-but-wrong belief* baked into data that loads cleanly (Phase 3's cliff-vs-ramp). And we cannot pre-enumerate every pitfall — survivor bias *is* the unknown-unknowns. The answer is neither exhaustive manual checking (infinite) nor pre-abstracting every pitfall (impossible); it's to **systematize the *detection of anomaly classes*, not the prediction of instances.**
+
+`dev/_audit.py` runs generic detectors over every table and season for the classes we keep hitting:
+- **uniqueness** (PK dupes — the George-Johnson collision), **reconciliation** (box vs team, line-score quarters vs final, line vs games), **range** (basketball domain bounds), **referential** (orphans, 2 teams/game)
+- **profile** — per-column null-rate by season; an *era-boundary jump* is the cliff/ramp signal; *all-null* is a dead column
+- **coverage** — data that contradicts `metric_coverage`'s own claims
+
+The leverage: **the system finds; we judge.** Adjudications are encoded back into `metric_coverage` (ramp vs cliff boundaries), so the audit **auto-suppresses what we've already explained and only escalates genuine surprises** — it *converges* instead of treadmilling. Proven: coverage-aware suppression took a run from 30 flags to 3, each real. "Did we miss something?" becomes "are there unexplained flags?" — a one-line answer.
+
+**Standing gate:** run the audit after every load (Phase 4+) and as a post-cutover health check. Any new flag must be adjudicated — *expected* → record the boundary in `metric_coverage`; *bug* → fix in the flattener and apply at the next reload. Floor: this catches structural/distributional errors; a plausible-and-internally-consistent wrong value (a BR typo) needs the agent-harness golden-truth tests as backstop.
+
+## 8. Where this connects
 
 - Phased roadmap, slice definitions, data inventory: `REBUILD_PLAN.md`
 - V1 failure evidence that motivates all of the above: `REBUILD_PLAN.md` → "V1 source-mash post-mortem"

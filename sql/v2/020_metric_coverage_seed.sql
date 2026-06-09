@@ -37,6 +37,7 @@ INSERT INTO metric_coverage (metric, column_ref, first_tracked_season, status, n
     ('fg3',  'player_box_basic.fg3m/fg3a',             1980, 'did_not_exist_before', 'the 3-point line DID NOT EXIST before 1979-80; NULL=not-applicable, never 0.', 'NBA official: 3-point line introduced 1979-80 (true cliff)'),
     -- BR-published derived/aux metrics.
     ('game_score',        'player_box_basic.game_score', 1979, 'br_published_from', 'BR did not publish GmSc before ~1978-79', 'BR publication boundary'),
+    ('plus_minus',        'player_box_basic.plus_minus', 1997, 'br_published_from', 'BR publishes +/- (play-by-play derived) from ~1996-97; NULL before, and NULL for DNP players within the tracked era.', 'BR publication boundary'),
     ('player_box_advanced','player_box_advanced.*',       1985, 'br_published_from', 'BR advanced box table not published before ~1985; derivable metrics inherit their inputs', 'BR publication boundary (Phase 0 verified)'),
     ('player_quarter_box', 'player_quarter_box.*',        2001, 'br_published_from', 'BR per-quarter tables absent in 1995, present by 2001; exact 1996-2000 boundary unpinned', 'BR publication boundary (Phase 0 verified)'),
     ('arena_name',         'games.arena_name',            1955, 'br_published_from', 'no scorebox meta block on pre-1955 BAA games', 'BR publication boundary (Phase 0 verified)'),

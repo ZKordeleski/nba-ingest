@@ -300,6 +300,11 @@ def build_game(slug, season, series_rows):
     game_row.update(season=season, season_type=season_type, round=round_,
                     series_slug=series_slug, game_in_series=gis,
                     arena_name=arena[0], arena_city=arena[1], arena_state=arena[2])
+    # team plus_minus = point differential (the flattener leaves it NULL; the
+    # audit flagged home/away_plus_minus as dead all-NULL columns).
+    hp, ap = game_row.get("home_pts"), game_row.get("away_pts")
+    game_row["home_plus_minus"] = (hp - ap) if hp is not None and ap is not None else None
+    game_row["away_plus_minus"] = (ap - hp) if hp is not None and ap is not None else None
 
     home_win = game_row["home_pts"] > game_row["away_pts"]
     basics = (flatten_basic(slug, home, hb, True, home_win, season, season_type, anchors)
