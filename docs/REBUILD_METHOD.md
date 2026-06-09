@@ -67,6 +67,8 @@ A naive wide table with NULLs makes the agent draw false conclusions: *"Bill Rus
 
 **B's single wide table** (query simplicity, one schema) **+ C's `metric_coverage` registry as the source of truth for interpretation**, surfaced *both* as rich Snowflake column comments *and* as a queryable table, *plus* guardrail views for the highest-risk leaderboard queries (career/all-time leaders, "firsts"). **Borrow A's honesty** — we never backfill fake zeros; where a stat never existed, the comment and the coverage row say so plainly — but **reject A's hard partitioning** as too costly and hostile to the single-table model.
 
+> **The table-split rule (when separate tables ARE warranted):** split by **grain**, never by **era**. Different grain → different table (`player_box_basic` vs `player_quarter_box` vs `games`). Same grain across eras → the *same* table, with NULLs + `metric_coverage` for stats that era didn't track. Old box scores are not a different *shape* — BR's column template is uniform across eras (Phase 0); they're the same columns with more NULLs. Era-partitioned tables would re-introduce the cross-era-union pain and "agent must know the boundaries" problem — the exact fragmentation that made V1 a mess. *(Validated in Phase 3: 1972-73 dropped into the identical schema once a parse bug — inferring DNP from missing minutes — was fixed; both eras coexist in one table, proven by `092_phase3_test.sql` #9.)*
+
 **The governing invariant — no ambiguous NULL.** Every NULL must resolve, via the coverage layer, to exactly one of:
 - **not-tracked-this-era** — the stat didn't exist yet (interpret as "not applicable," never zero), or
 - **tracked-but-missing-this-game** — a genuine gap that should be near-zero and is *flagged by the guard* (§4).

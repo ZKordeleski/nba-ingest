@@ -23,19 +23,19 @@ SELECT * FROM (
     -- *** NULL discipline: stats not tracked until 1973-74/1979-80 must be NULL, not 0 ***
     UNION ALL SELECT 2, '*** no 1972-73 player-who-played has non-null stl/blk/tov/oreb/dreb ***',
            (SELECT COUNT(*) FROM player_box_basic
-              WHERE season = 1973 AND minutes_played > 0
+              WHERE season = 1973 AND pts IS NOT NULL
                 AND (stl IS NOT NULL OR blk IS NOT NULL OR tov IS NOT NULL
                      OR oreb IS NOT NULL OR dreb IS NOT NULL)) = 0,
            'leaked_untracked=' || (SELECT COUNT(*) FROM player_box_basic
-              WHERE season = 1973 AND minutes_played > 0
+              WHERE season = 1973 AND pts IS NOT NULL
                 AND (stl IS NOT NULL OR blk IS NOT NULL OR tov IS NOT NULL OR oreb IS NOT NULL OR dreb IS NOT NULL))
     UNION ALL SELECT 3, 'no 1972-73 3-pointers (line did not exist until 1979-80)',
            (SELECT COUNT(*) FROM player_box_basic WHERE season = 1973 AND fg3m IS NOT NULL) = 0,
            'fg3_rows=' || (SELECT COUNT(*) FROM player_box_basic WHERE season = 1973 AND fg3m IS NOT NULL)
     UNION ALL SELECT 4, 'tracked stats (pts, total reb) ARE present in 1972-73',
-           (SELECT COUNT(*) FROM player_box_basic WHERE season = 1973 AND minutes_played > 0 AND pts IS NOT NULL) > 5000
-           AND (SELECT COUNT(*) FROM player_box_basic WHERE season = 1973 AND minutes_played > 0 AND reb IS NULL) = 0,
-           'played_rows=' || (SELECT COUNT(*) FROM player_box_basic WHERE season=1973 AND minutes_played>0 AND pts IS NOT NULL)
+           (SELECT COUNT(*) FROM player_box_basic WHERE season = 1973 AND pts IS NOT NULL AND pts IS NOT NULL) > 5000
+           AND (SELECT COUNT(*) FROM player_box_basic WHERE season = 1973 AND pts IS NOT NULL AND reb IS NULL) = 0,
+           'played_rows=' || (SELECT COUNT(*) FROM player_box_basic WHERE season=1973 AND pts IS NOT NULL AND pts IS NOT NULL)
 
     -- old-era playoff round handling
     UNION ALL SELECT 5, '1973 playoffs present incl. round=Finals (NYK champs)',
@@ -56,9 +56,9 @@ SELECT * FROM (
 
     -- *** both eras coexist correctly in ONE schema ***
     UNION ALL SELECT 9, '*** both eras in one schema: 2025 stl recorded, 1973 stl NULL ***',
-           (SELECT COUNT(*) FROM player_box_basic WHERE season=2025 AND minutes_played>0 AND stl IS NOT NULL) > 5000
+           (SELECT COUNT(*) FROM player_box_basic WHERE season=2025 AND pts IS NOT NULL AND stl IS NOT NULL) > 5000
            AND (SELECT COUNT(*) FROM player_box_basic WHERE season=1973 AND stl IS NOT NULL) = 0,
-           '2025_stl=' || (SELECT COUNT(*) FROM player_box_basic WHERE season=2025 AND minutes_played>0 AND stl IS NOT NULL)
+           '2025_stl=' || (SELECT COUNT(*) FROM player_box_basic WHERE season=2025 AND pts IS NOT NULL AND stl IS NOT NULL)
            || ' 1973_stl=' || (SELECT COUNT(*) FROM player_box_basic WHERE season=1973 AND stl IS NOT NULL)
     UNION ALL SELECT 10, 'officials honestly sparse pre-1995 (documented in metric_coverage)',
            (SELECT COUNT(*) FROM game_officials go JOIN g73 g ON go.game_id=g.game_id) = 0

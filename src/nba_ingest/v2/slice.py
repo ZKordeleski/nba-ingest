@@ -143,20 +143,22 @@ def flatten_basic(slug, team_abbr, df, is_home, is_win, season, season_type, anc
     rows = []
     for _, r in d.iterrows():
         name = str(r.get("Player", r.iloc[0])).strip()
-        mp = _parse_minutes(r.get("MP"))
-        dnp = mp is None
-        _i = lambda v: 0 if dnp else _safe_int(v)
+        # Parse each stat directly. _safe_int returns None for genuine "Did Not
+        # Play" cells AND for not-tracked columns (e.g. STL pre-1973-74). Do NOT
+        # infer DNP from missing minutes: pre-~1985 box scores omit MP for players
+        # who clearly played (a 39-pt NaN-MP line is not a DNP). Zeroing on
+        # missing MP was an era bug that 1972-73 exposed.
         rows.append({
             "game_id": slug, "player_id": anchors.get(name) or name, "player_name": name,
             "team_abbr": team_abbr, "is_home": is_home, "is_starter": name in starters,
             "is_win": is_win, "season": season, "season_type": season_type,
-            "minutes_played": mp,
-            "pts": _i(r.get("PTS")), "ast": _i(r.get("AST")), "reb": _i(r.get("TRB")),
-            "oreb": _i(r.get("ORB")), "dreb": _i(r.get("DRB")), "stl": _i(r.get("STL")),
-            "blk": _i(r.get("BLK")), "tov": _i(r.get("TOV")), "pf": _i(r.get("PF")),
-            "fgm": _i(r.get("FG")), "fga": _i(r.get("FGA")), "fg_pct": _safe_float(r.get("FG%")),
-            "fg3m": _i(r.get("3P")), "fg3a": _i(r.get("3PA")), "fg3_pct": _safe_float(r.get("3P%")),
-            "ftm": _i(r.get("FT")), "fta": _i(r.get("FTA")), "ft_pct": _safe_float(r.get("FT%")),
+            "minutes_played": _parse_minutes(r.get("MP")),
+            "pts": _safe_int(r.get("PTS")), "ast": _safe_int(r.get("AST")), "reb": _safe_int(r.get("TRB")),
+            "oreb": _safe_int(r.get("ORB")), "dreb": _safe_int(r.get("DRB")), "stl": _safe_int(r.get("STL")),
+            "blk": _safe_int(r.get("BLK")), "tov": _safe_int(r.get("TOV")), "pf": _safe_int(r.get("PF")),
+            "fgm": _safe_int(r.get("FG")), "fga": _safe_int(r.get("FGA")), "fg_pct": _safe_float(r.get("FG%")),
+            "fg3m": _safe_int(r.get("3P")), "fg3a": _safe_int(r.get("3PA")), "fg3_pct": _safe_float(r.get("3P%")),
+            "ftm": _safe_int(r.get("FT")), "fta": _safe_int(r.get("FTA")), "ft_pct": _safe_float(r.get("FT%")),
             "plus_minus": _safe_float(r.get("+/-")), "game_score": _safe_float(r.get("GmSc")),
             "fetched_at": _now_utc(),
         })
