@@ -37,4 +37,5 @@ INSERT INTO metric_coverage (metric, column_ref, first_tracked_season, status, n
     ('game_score',        'player_box_basic.game_score', 1979, 'br_published_from', 'BR did not publish GmSc before ~1978-79', 'BR publication boundary'),
     ('player_box_advanced','player_box_advanced.*',       1985, 'br_published_from', 'BR advanced box table not published before ~1985; derivable metrics inherit their inputs', 'BR publication boundary (Phase 0 verified)'),
     ('player_quarter_box', 'player_quarter_box.*',        2001, 'br_published_from', 'BR per-quarter tables absent in 1995, present by 2001; exact 1996-2000 boundary unpinned', 'BR publication boundary (Phase 0 verified)'),
-    ('arena_name',         'games.arena_name',            1955, 'br_published_from', 'no scorebox meta block on pre-1955 BAA games', 'BR publication boundary (Phase 0 verified)');
+    ('arena_name',         'games.arena_name',            1955, 'br_published_from', 'no scorebox meta block on pre-1955 BAA games', 'BR publication boundary (Phase 0 verified)'),
+    ('game_officials',     'game_officials.*',            1995, 'br_published_from', 'referee anchor links only from 1995+; pre-1995 bare names are not extracted yet -> game_officials empty there (sparse, not wrong)', 'BR publication boundary (Phase 0 + Phase 3 verified)');

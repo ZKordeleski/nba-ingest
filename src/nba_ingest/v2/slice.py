@@ -8,16 +8,60 @@ NBA-Stats ids, no `source` column, no game_id impersonation.
 
 from __future__ import annotations
 
+import logging
 import re
+import time
 
+import requests
 from bs4 import BeautifulSoup
 
-from nba_ingest.br_client import BASE_URL, fetch, parse_tables_with_comments
+from nba_ingest.br_client import (
+    BASE_URL,
+    extract_game_slugs_from_html,
+    fetch,
+    parse_tables_with_comments,
+)
 from nba_ingest.fetchers.boxscore import (
     _extract_player_anchors,
     _find_team_abbrs_from_tables,
     _parse_meta,
 )
+from nba_ingest.fetchers.schedule import SEASON_MONTHS
+
+log = logging.getLogger(__name__)
+
+
+def _fetch_retry(url: str, tries: int = 3) -> str:
+    """fetch() with retry on transient connection errors (Phase 2 surfaced one
+    ConnectionReset over ~1300 games). Distinct from a permanent 404/parse fail."""
+    for i in range(tries):
+        try:
+            return fetch(url)
+        except requests.exceptions.ConnectionError:
+            if i == tries - 1:
+                raise
+            time.sleep(8)
+    raise RuntimeError("unreachable")
+
+
+def enumerate_season_by_schedule(season: int) -> list[str]:
+    """All game slugs for a season via the league monthly schedule pages.
+
+    Works for any era (defunct franchises included) and is ~9 fetches/season —
+    unlike team-page enumeration, which needs current abbrs and misses the NBA
+    Cup final (Phase 2 parity delta). Skips months whose page doesn't exist.
+    """
+    seen, out = set(), []
+    for month in SEASON_MONTHS:
+        try:
+            html = _fetch_retry(f"{BASE_URL}/leagues/NBA_{season}_games-{month}.html")
+        except requests.HTTPError:
+            continue  # off-season / nonexistent month page for this era
+        for slug in extract_game_slugs_from_html(html):
+            if slug not in seen:
+                seen.add(slug)
+                out.append(slug)
+    return out
 from nba_ingest.flatteners.boxscore import (
     _drop_totals_row,
     _flatten_columns,
@@ -42,9 +86,11 @@ TEAM_NICKNAMES = {
     "UTA": "jazz", "WAS": "wizards",
 }
 
-CANONICAL_ROUNDS = [  # most-specific first ("Finals" is a substring of "Conference Finals")
+CANONICAL_ROUNDS = [  # most-specific first ("Finals" is a substring of "...Finals")
     ("Conference Semifinals", "Conference Semifinals", 2),
     ("Conference Finals", "Conference Finals", 3),
+    ("Division Semifinals", "Division Semifinals", 2),   # pre-1971 era playoff naming
+    ("Division Finals", "Division Finals", 3),           # (1970s used divisions, not conferences)
     ("First Round", "First Round", 1),
     ("Play-In", "Play-In", 0),
     ("Finals", "Finals", 4),
@@ -220,7 +266,7 @@ def match_series(round_, home_abbr, away_abbr, series_rows):
 # ───────────────────────────────────────────────────────────── transform one game
 def build_game(slug, season, series_rows):
     """Fetch + flatten one game into a dict of row-lists, or ('quarantine', reason)."""
-    html = fetch(f"{BASE_URL}/boxscores/{slug}.html")
+    html = _fetch_retry(f"{BASE_URL}/boxscores/{slug}.html")
     visible, hidden = parse_tables_with_comments(html)
     home, away = _find_team_abbrs_from_tables(slug, visible)
     hb, ab = visible.get(f"box-{home}-game-basic"), visible.get(f"box-{away}-game-basic")

@@ -58,8 +58,8 @@ SELECT * FROM (
     UNION ALL SELECT 10, 'parity vs V1 ZK_NBA season=2025 (within 3%)',
            ABS((SELECT COUNT(*) FROM games) - (SELECT n FROM v1)) <= GREATEST(30, (SELECT n FROM v1) * 0.03),
            'v2=' || (SELECT COUNT(*) FROM games) || ' v1=' || (SELECT n FROM v1)
-    UNION ALL SELECT 11, 'metric_coverage intact (17)',
-           (SELECT COUNT(*) FROM metric_coverage) = 17, 'rows=' || (SELECT COUNT(*) FROM metric_coverage)
+    UNION ALL SELECT 11, 'metric_coverage intact (>=17, grows as boundaries are found)',
+           (SELECT COUNT(*) FROM metric_coverage) >= 17, 'rows=' || (SELECT COUNT(*) FROM metric_coverage)
     UNION ALL SELECT 12, 'quarantine rate low (<30)',
            (SELECT COUNT(*) FROM quarantine) < 30, 'quarantined=' || (SELECT COUNT(*) FROM quarantine)
 )
