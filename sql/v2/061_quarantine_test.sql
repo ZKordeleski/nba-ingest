@@ -31,9 +31,9 @@ SELECT * FROM (
     -- 3. reason_class is a constrained vocabulary (no stray free-text classes)
     UNION ALL SELECT 3, 'reason_class in the known taxonomy',
            (SELECT COUNT(*) FROM quarantine
-              WHERE reason_class NOT IN ('fetch_error','missing_table','no_team_totals','guard_blocker')) = 0,
+              WHERE reason_class NOT IN ('fetch_error','missing_table','no_team_totals','guard_blocker','line_score_blocker')) = 0,
            'off_taxonomy=' || (SELECT COUNT(*) FROM quarantine
-              WHERE reason_class NOT IN ('fetch_error','missing_table','no_team_totals','guard_blocker'))
+              WHERE reason_class NOT IN ('fetch_error','missing_table','no_team_totals','guard_blocker','line_score_blocker'))
 
     -- 4. DRAIN invariant: no game is BOTH loaded and quarantined-open
     UNION ALL SELECT 4, 'drain holds: no game both loaded and open-quarantined',

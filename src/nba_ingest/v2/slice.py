@@ -213,11 +213,14 @@ def flatten_inactives(slug, meta):
 
 
 # ───────────────────────────────────────────────────────────── guard
-# Max |player_pts_sum - team_total| admitted as a CAVEAT (real game, known source
-# imperfection — see sql/v2/050_caveats.sql). Larger = "egregious" -> quarantine for
-# investigation (parse-bug territory). NOT a silent tolerance: admitted games get an
-# explicit data_caveats row. Tunable.
-CAVEAT_RECON_MAX = 6
+# Caveat CEILINGS — the symmetric bound that keeps "admit-with-caveat" honest: a
+# small mismatch is a real source imperfection (admit + flag); ABOVE the ceiling it
+# is bug-sized -> QUARANTINE for human review (the rich quarantine worklist carries
+# the magnitudes so it can be re-admitted responsibly). NOT a silent tolerance —
+# admitted games still get an explicit data_caveats row. All tunable.
+CAVEAT_RECON_MAX = 6        # |player_pts_sum - team_total|
+CAVEAT_LINESCORE_MAX = 6    # |quarters_sum - line_total| or |line_total - game_total|
+CAVEAT_COLLISION_MAX = 4    # rows sharing one resolved player_id (2-3 = same-name players; more = slug bug)
 
 
 def guard(game_row, basic_rows):
@@ -257,7 +260,9 @@ def guard(game_row, basic_rows):
     for r in basic_rows:
         seen[r["player_id"]] = seen.get(r["player_id"], 0) + 1
     for pid, n in seen.items():
-        if n > 1:
+        if n > CAVEAT_COLLISION_MAX:
+            blockers.append(f"player_id {pid}: {n} rows share one slug (>{CAVEAT_COLLISION_MAX}) — slug-resolution bug")
+        elif n > 1:
             caveats.append({"player_id": pid, "caveat_type": "player_id_collision",
                             "detail": f"{n} rows share player_id {pid} (same-name players; needs per-row slug resolution)",
                             "magnitude": n})
@@ -389,9 +394,11 @@ def build_game(slug, season, series_rows):
     line = flatten_line_score(slug, hidden.get("line_score"))
     if line:
         line.pop("source", None)
-        # line-score reconciliation: same source-discrepancy family as the box
-        # (old line scores' quarters/total don't always agree with the final). Admit
-        # + caveat rather than flag forever.
+        # line-score reconciliation: same source-discrepancy FAMILY as the box, with
+        # the same SYMMETRIC bound — a small quarters/total gap is a real source quirk
+        # (admit + caveat); a bug-sized gap (incomplete quarter parse, sources disagree
+        # on the final) is QUARANTINED for human review, never silently caveated.
+        ls_caveats, ls_blockers = [], []
         for side, gtot in (("home", game_row["home_pts"]), ("away", game_row["away_pts"])):
             qsum = sum((line.get(f"{side}_q{q}") or 0) for q in (1, 2, 3, 4)) \
                  + sum((line.get(f"{side}_ot{o}") or 0) for o in (1, 2, 3, 4))
@@ -400,9 +407,17 @@ def build_game(slug, season, series_rows):
             if ltot is not None and gtot is not None and ltot != gtot:
                 diffs.append(abs(ltot - gtot))
             if diffs:
-                caveats.append({"player_id": None, "caveat_type": "line_score_discrepancy",
-                                "detail": f"{side} line score: quarters={qsum} total={ltot} game={gtot} (source discrepancy)",
-                                "magnitude": max(diffs)})
+                mag = max(diffs)
+                desc = f"{side} line score: quarters={qsum} total={ltot} game={gtot}"
+                if mag > CAVEAT_LINESCORE_MAX:
+                    ls_blockers.append(f"{desc} (diff {mag} > {CAVEAT_LINESCORE_MAX})")
+                else:
+                    ls_caveats.append({"player_id": None, "caveat_type": "line_score_discrepancy",
+                                       "detail": f"{desc} (source discrepancy)", "magnitude": mag})
+        if ls_blockers:
+            return ("quarantine", quarantine_row(slug, season, "line_score_blocker", "guard",
+                    "; ".join(ls_blockers), {"line_score": ls_blockers}))
+        caveats.extend(ls_caveats)
     now = _now_utc()
     caveat_rows = [{"game_id": slug, "fetched_at": now, **c} for c in caveats]
     # Orientation: home is BR-canonically the slug's trailing code. When the box
