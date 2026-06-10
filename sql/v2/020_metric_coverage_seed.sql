@@ -18,12 +18,17 @@ USE WAREHOUSE NBA_INGEST_WH;
 INSERT INTO metric_coverage (metric, column_ref, first_tracked_season, status, null_means, authority) VALUES
     -- Always tracked since the BAA's first season (1946-47).
     ('pts',  'player_box_basic.pts / games.*_pts',     NULL, 'always',         NULL, 'tracked since 1946-47'),
-    ('mp',   'player_box_basic.minutes_played',        NULL, 'always',         NULL, 'tracked since 1946-47'),
     ('fg',   'player_box_basic.fgm/fga',               NULL, 'always',         NULL, 'tracked since 1946-47'),
     ('ft',   'player_box_basic.ftm/fta',               NULL, 'always',         NULL, 'tracked since 1946-47'),
     ('trb',  'player_box_basic.reb',                   NULL, 'always',         NULL, 'total rebounds since 1950-51; treat pre-1951 as not recorded'),
-    ('ast',  'player_box_basic.ast',                   NULL, 'always',         NULL, 'tracked since 1946-47'),
     ('pf',   'player_box_basic.pf',                    NULL, 'always',         NULL, 'tracked since 1946-47'),
+    -- RECORDING RAMPS: these stats existed but old box scores logged them sparsely
+    -- (Phase 4 audit: ast 58% NULL in 1960 -> 0% modern; mp 77% -> 19.5%; is_starter
+    -- 98% -> 0%). A NULL = not-recorded-this-player/game, never 0. NOT 'always'.
+    ('mp',         'player_box_basic.minutes_played',  NULL, 'recording_ramp', 'sparse in old box scores; NULL = not recorded, never 0', 'BR recording ramp (Phase 4 audit)'),
+    ('ast',        'player_box_basic.ast',             NULL, 'recording_ramp', 'sparse in old box scores; NULL = not recorded, never 0', 'BR recording ramp (Phase 4 audit)'),
+    ('is_starter', 'player_box_basic.is_starter',      NULL, 'recording_ramp', '"Reserves" separator absent in old box scores -> NULL (unknown); complete modern', 'BR format ramp (Phase 4 audit)'),
+    ('arena_state','games.arena_state',                NULL, 'recording_ramp', 'old scorebox_meta lists "Arena, City" without state -> NULL; present modern', 'BR format ramp (Phase 4 audit)'),
     -- The 1973-74 tracking expansion.
     -- RAMP, not cliff: these stats EXISTED but were only sporadically recorded
     -- before the league-wide official season (Phase 3 survivor analysis found

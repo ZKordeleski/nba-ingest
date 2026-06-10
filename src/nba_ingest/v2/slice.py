@@ -230,6 +230,11 @@ def guard(game_row, basic_rows) -> list[str]:
             v.append(f"{r['player_name']}: fg_pct {r['fg_pct']}")
     for abbr, total in ((game_row["home_team_abbr"], hp), (game_row["away_team_abbr"], ap)):
         s = sum(r["pts"] or 0 for r in basic_rows if r["team_abbr"] == abbr)
+        # STRICT: any mismatch quarantines. The guard flags; a human makes the call
+        # on the quarantined set (some old-era games carry source-level scorekeeping
+        # discrepancies — BR's own Team Totals != its player rows). We do NOT tolerate
+        # silently, because that would also mask real parse bugs and hide the imperfect
+        # games instead of surfacing them.
         if total is not None and s != total:
             v.append(f"{abbr}: player-pts {s} != team {total}")
     return v

@@ -101,16 +101,20 @@ def main():
         # coverage-aware suppression: an era null-rate JUMP is EXPECTED if the
         # column maps to a metric_coverage boundary that explains it. Only
         # UNexplained jumps escalate to a flag (high signal, no era-jump noise).
-        cov_first = {m: f for m, f in execute(conn,
-            f"SELECT metric, first_tracked_season FROM {DB}.metric_coverage WHERE first_tracked_season IS NOT NULL")}
+        cov = {m: (f, st) for m, f, st in execute(conn,
+            f"SELECT metric, first_tracked_season, status FROM {DB}.metric_coverage")}
         COVCOL = {"stl": "stl", "blk": "blk", "tov": "tov", "oreb": "oreb", "dreb": "dreb",
                   "fg3m": "fg3", "fg3a": "fg3", "fg3_pct": "fg3", "game_score": "game_score",
-                  "arena_state": "arena_name", "arena_name": "arena_name", "arena_city": "arena_name"}
+                  "minutes_played": "mp", "ast": "ast", "is_starter": "is_starter",
+                  "plus_minus": "plus_minus",
+                  "arena_state": "arena_state", "arena_name": "arena_name", "arena_city": "arena_name"}
 
         def explained(col, hi_null_seasons):
             base = col.lower().replace("home_", "").replace("away_", "")
-            m = COVCOL.get(base, base)  # fallback: the base column name is the metric (e.g. plus_minus)
-            first = cov_first.get(m)
+            m = COVCOL.get(base, base)  # fallback: the base column name is the metric
+            first, status = cov.get(m, (None, None))
+            if status == "recording_ramp":   # gradual old-era sparsity is expected by design
+                return True
             return bool(first and hi_null_seasons and all(s < first for s in hi_null_seasons))
 
         # 5. PROFILE (generic): per-column null-rate by season; flag all-null, degenerate, era jumps
