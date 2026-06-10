@@ -1,5 +1,13 @@
 """Gate remediation — re-quarantine EVERY game currently admitted-on-caveat.
 
+⚠️⚠️ ONE-TIME MIGRATION ARTIFACT — DELETE THIS FILE once it has run successfully at
+the gate and the old backlog is drained. It exists only to clean up games that the
+*old* auto-admit-on-caveat code let in; the strict guardrail (slice.build_game)
+means no new such games are ever created, so after the one-time sweep this script is
+dead weight. (Its durable counterpart, dev/_approve.py, stays — that's the permanent
+human-approval path.) `git rm dev/_remediate_caveats.py` is a gate step in
+REBUILD_PLAN.
+
 Before the strict-guardrail fix, build_game auto-admitted flagged games with a
 data_caveats row. Zack's call: those games subverted the guardrail and must go
 through review like any other flag. This moves every currently-caveated game to the

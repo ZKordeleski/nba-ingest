@@ -524,7 +524,10 @@ Three tables, **not one** (unification would be the overengineering we keep guar
 3. `_remediate_caveats.py` (preview → `--apply`) — re-quarantine ALL ~30 admitted-on-caveat games (data_caveats → empty).
 4. `_approve.py` — review the worklist; bulk-approve the legit soft discrepancies (`--reason-class data_discrepancy`), re-writing their caveats.
 5. `_audit.py --completeness` across all loaded eras — the first run that tests *absence* for real.
-6. (loader swap is already on `main`; the next chunk picks up `insert_quarantine` + drain automatically.)
+6. **`git rm dev/_remediate_caveats.py`** — one-time migration artifact; delete it once the backlog is drained (the strict guardrail means no new admitted-on-caveat games exist, so it's dead weight). `dev/_approve.py` stays (durable).
+7. (loader swap is already on `main`; the next chunk picks up `insert_quarantine` + drain automatically.)
+
+> **Durable vs one-time tooling:** `_approve.py` = permanent (the human-approval path). `_remediate_caveats.py` = one-time (clean up the old auto-admit backlog, then delete). General principle — migration/remediation scripts clean up *behind* us as we go; they don't accrete in `dev/`.
 
 > ✋ **Gate: each piece validates against the 1947–59 chunk as it lands (test-as-we-go).**
 
