@@ -35,7 +35,7 @@ log = logging.getLogger("settle")
 log.setLevel(logging.INFO)
 
 TABLES = ["games", "player_box_basic", "player_box_advanced", "line_scores",
-          "game_officials", "game_inactives", "data_caveats"]
+          "game_officials", "game_inactives", "data_caveats", "audit_findings"]
 
 
 def season_of(d: date) -> int:
@@ -79,10 +79,10 @@ def main():
                 try:
                     res = v2.build_game(slug, season, series_by_season[season])
                 except Exception as exc:  # noqa: BLE001
-                    res = ("quarantine", f"error: {exc!r}")
+                    res = ("quarantine", v2.quarantine_row(slug, season, "fetch_error", "fetch", repr(exc)))
                 if isinstance(res, tuple):
-                    quarantined.append((slug, res[1])); n_q += 1
-                    log.warning("%s QUARANTINED: %s", slug, res[1])
+                    quarantined.append(res[1]); n_q += 1
+                    log.warning("%s QUARANTINED: %s", slug, res[1]["detail"])
                     continue
                 for t in TABLES:
                     buckets[t].extend(res[t])
@@ -90,12 +90,9 @@ def main():
             cur = conn.cursor()
             for t in TABLES:
                 v2.insert(cur, t, buckets[t])
+            v2.drain_quarantine(cur, [r["game_id"] for r in buckets["games"]])
             if quarantined:
-                cur.execute("CREATE TABLE IF NOT EXISTS ZK_NBA_V2.FLAT.quarantine "
-                            "(game_id STRING, reason STRING, fetched_at TIMESTAMP_NTZ)")
-                now = v2._now_utc()
-                cur.executemany("INSERT INTO ZK_NBA_V2.FLAT.quarantine VALUES (%s,%s,%s)",
-                                [(g, r, now) for g, r in quarantined])
+                v2.insert_quarantine(cur, quarantined)
             conn.commit(); cur.close()
     finally:
         conn.close()

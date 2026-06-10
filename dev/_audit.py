@@ -21,6 +21,7 @@ Read-only. Run: .venv/bin/python dev/_audit.py
 
 from __future__ import annotations
 
+import argparse
 import logging
 from pathlib import Path
 
@@ -29,11 +30,16 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent.parent / ".env")
 
 from nba_ingest.snowflake_client import connect, execute
+from nba_ingest.v2.slice import enumerate_season_by_schedule
 
 logging.basicConfig(level=logging.WARNING)
 DB = "ZK_NBA_V2.FLAT"
 FLAGS: list[str] = []
 OKS: list[str] = []
+# Structured, persisted findings — the durable "pending judgment" inbox
+# (FLAT.audit_findings). New detectors call finding(); legacy detectors still
+# use flag()/ok() for console-only output.
+FINDINGS: list[dict] = []
 
 
 def flag(name, detail):
@@ -44,11 +50,45 @@ def ok(name, detail=""):
     OKS.append(f"  ✓ {name}{(' — ' + detail) if detail else ''}")
 
 
+def finding(detector, scope, subject_id, detail, severity="warn", metric_value=None):
+    """Record a structured finding (persisted to audit_findings) AND surface it on
+    the console. finding_key = detector:subject dedupes across runs (MERGE)."""
+    FINDINGS.append({"finding_key": f"{detector}:{subject_id}", "detector": detector,
+                     "scope": scope, "subject_id": str(subject_id), "severity": severity,
+                     "detail": detail, "metric_value": metric_value})
+    FLAGS.append(f"  ⚠ {detector} [{subject_id}]: {detail}")
+
+
+def persist_findings(conn):
+    """MERGE findings into audit_findings: bump last_seen on recurrence, insert new,
+    never auto-close (we judge). No-op if the table is absent (pre-070 apply)."""
+    if not FINDINGS:
+        return
+    cur = conn.cursor()
+    try:
+        for f in FINDINGS:
+            cur.execute(
+                f"""MERGE INTO {DB}.audit_findings t
+                    USING (SELECT %s AS k) s ON t.finding_key = s.k
+                    WHEN MATCHED THEN UPDATE SET last_seen_at=CURRENT_TIMESTAMP(),
+                        detail=%s, metric_value=%s, severity=%s
+                    WHEN NOT MATCHED THEN INSERT
+                        (finding_key, detector, scope, subject_id, severity, detail,
+                         metric_value, first_seen_at, last_seen_at, status)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,CURRENT_TIMESTAMP(),CURRENT_TIMESTAMP(),'open')""",
+                (f["finding_key"], f["detail"], f["metric_value"], f["severity"],
+                 f["finding_key"], f["detector"], f["scope"], f["subject_id"],
+                 f["severity"], f["detail"], f["metric_value"]))
+        conn.commit()
+    finally:
+        cur.close()
+
+
 def q1(conn, sql):
     return execute(conn, sql)[0][0]
 
 
-def main():
+def main(check_completeness=False):
     conn = connect()
     try:
         seasons = [r[0] for r in execute(conn, f"SELECT DISTINCT season FROM {DB}.games ORDER BY season")]
@@ -168,6 +208,100 @@ def main():
             else:
                 ok(f"coverage {metric}", f"no data before {first}")
 
+        # ─── ABSENCE & honesty detectors (the survivor-bias closers) ───────────
+        # 7. ZERO-BOX: a game in `games` with NO player_box rows is invisible to
+        # the 2-teams check (GROUP BY yields no row). Closes that referential hole.
+        zero_box = q1(conn, f"""SELECT COUNT(*) FROM {DB}.games g
+          WHERE NOT EXISTS (SELECT 1 FROM {DB}.player_box_basic b WHERE b.game_id=g.game_id)""")
+        if zero_box:
+            finding("zero_box_games", "game", "all",
+                    f"{zero_box} loaded games have NO player_box rows (invisible to the 2-teams check)",
+                    "error", zero_box)
+        else:
+            ok("zero_box_games", "every game has box rows")
+
+        # 8. ORIENTATION backstop: home is BR-canonically the slug's trailing code.
+        # A mismatch = the order-fallback fired (possible home/away swap) OR a benign
+        # slug/abbr divergence. Flag for judgment; the allowlist is learned empirically.
+        n_mism = q1(conn, f"SELECT COUNT(*) FROM {DB}.games WHERE home_team_abbr <> RIGHT(game_id,3)")
+        if n_mism:
+            sample = [r[0] for r in execute(conn,
+                f"SELECT game_id FROM {DB}.games WHERE home_team_abbr <> RIGHT(game_id,3) LIMIT 6")]
+            finding("orientation", "game", "backstop",
+                    f"{n_mism} games where home_team_abbr != slug home (RIGHT 3); sample {sample} "
+                    f"— adjudicate swap vs benign abbr divergence", "warn", n_mism)
+        else:
+            ok("orientation backstop", "home_team_abbr == slug home for all games")
+
+        # 9. RANGE team pts: `games` had only a tie check. Bound team scores. The 1950
+        # Fort Wayne 19-18 Minneapolis game (18) is the real historical floor.
+        bad_pts = q1(conn, f"""SELECT COUNT(*) FROM {DB}.games
+          WHERE home_pts IS NULL OR away_pts IS NULL
+             OR home_pts NOT BETWEEN 15 AND 200 OR away_pts NOT BETWEEN 15 AND 200""")
+        if bad_pts:
+            finding("range_team_pts", "game", "all",
+                    f"{bad_pts} games with team pts NULL or outside [15,200]", "error", bad_pts)
+        else:
+            ok("range_team_pts", "all team scores in [15,200]")
+
+        # 10. CAVEAT RATE: admit-with-caveat must not become a suppression dumping
+        # ground. Proliferation of one type = a systematic bug, not per-game imperfection.
+        # (A caveat already suppresses ONLY its own detector — a caveated game still
+        # runs every other check; this guards the *rate*.) Baseline ~0.14%.
+        gps = {s: q1(conn, f"SELECT COUNT(*) FROM {DB}.games WHERE season={s}") for s in seasons}
+        for s, ctype, n in execute(conn, f"""SELECT g.season, c.caveat_type, COUNT(DISTINCT c.game_id)
+              FROM {DB}.data_caveats c JOIN {DB}.games g USING(game_id) GROUP BY 1,2"""):
+            tot = gps.get(s) or 1
+            frac = n / tot
+            if frac > 0.03 and n >= 5:
+                finding("caveat_rate", "season", f"{s}:{ctype}",
+                        f"{n}/{tot} games ({frac:.1%}) carry {ctype} — proliferation; "
+                        f"systematic bug rather than per-game imperfection?", "warn", round(frac, 4))
+            else:
+                ok(f"caveat_rate {s} {ctype}", f"{n}/{tot} ({frac:.1%}) within baseline")
+
+        # 11. QUARANTINE RATE: a per-era spike = systematic parse failure masquerading
+        # as "that era was just bad data". Schema-aware (rich quarantine only).
+        qcols = {r[0].lower() for r in execute(conn, f"""SELECT column_name
+            FROM ZK_NBA_V2.INFORMATION_SCHEMA.COLUMNS
+            WHERE table_schema='FLAT' AND table_name='QUARANTINE'""")}
+        if {"season", "reason_class"} <= qcols:
+            for s, qn in execute(conn, f"SELECT season, COUNT(*) FROM {DB}.quarantine WHERE status='open' GROUP BY 1"):
+                tot = (gps.get(s) or 0) + qn
+                rate = qn / tot if tot else 0
+                if rate > 0.05 and qn >= 3:
+                    finding("quarantine_rate", "season", s,
+                            f"{qn}/{tot} games ({rate:.1%}) quarantined — systematic parse failure for this era?",
+                            "warn", round(rate, 4))
+                else:
+                    ok(f"quarantine_rate {s}", f"{qn} quarantined ({rate:.1%})")
+        else:
+            ok("quarantine_rate", "legacy quarantine schema (pre-060 migration) — rate profiling deferred")
+
+        # 12. COMPLETENESS (gated; re-fetches schedule pages): the only detector that
+        # looks at what ISN'T there. Every scheduled game must be loaded OR quarantined;
+        # the residual = silently dropped. Catches the demonstrated failure mode.
+        if check_completeness:
+            quar_all = {r[0] for r in execute(conn, f"SELECT game_id FROM {DB}.quarantine")}
+            for s in seasons:
+                loaded = {r[0] for r in execute(conn, f"SELECT game_id FROM {DB}.games WHERE season={s}")}
+                try:
+                    enumerated = set(enumerate_season_by_schedule(s))
+                except Exception as exc:  # noqa: BLE001
+                    flag(f"completeness {s}", f"could not enumerate schedule: {exc!r}")
+                    continue
+                missing = enumerated - loaded - quar_all
+                if missing:
+                    finding("completeness", "season", s,
+                            f"{len(missing)} scheduled games neither loaded nor quarantined "
+                            f"(sample {sorted(missing)[:5]})", "error", len(missing))
+                else:
+                    ok(f"completeness {s}", f"{len(enumerated)} scheduled = {len(loaded)} loaded + quarantined")
+        else:
+            ok("completeness", "skipped (pass --completeness; re-fetches schedule pages)")
+
+        persist_findings(conn)
+
     finally:
         conn.close()
 
@@ -175,7 +309,13 @@ def main():
     print("\n".join(FLAGS) if FLAGS else "  (none)")
     print(f"\n=== {len(OKS)} OK ===")
     print("\n".join(OKS))
+    print(f"\n{len(FINDINGS)} structured findings persisted to audit_findings "
+          f"(query DERIVED.vw_open_findings).")
 
 
 if __name__ == "__main__":
-    main()
+    ap = argparse.ArgumentParser(description="ZK_NBA_V2 anomaly audit")
+    ap.add_argument("--completeness", action="store_true",
+                    help="run the schedule-reconciliation completeness check (re-fetches schedule pages)")
+    args = ap.parse_args()
+    main(check_completeness=args.completeness)

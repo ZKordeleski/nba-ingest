@@ -8,6 +8,7 @@ NBA-Stats ids, no `source` column, no game_id impersonation.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import time
@@ -308,14 +309,46 @@ def match_series(round_, home_abbr, away_abbr, series_rows):
 
 
 # ───────────────────────────────────────────────────────────── transform one game
+def quarantine_row(slug, season, reason_class, failure_stage, detail, context=None):
+    """A rich, game-grain quarantine record. The slug is deterministic
+    (YYYYMMDD0TTT), so game_date / home_team_abbr / season are known even on a
+    TOTAL failure — a quarantine row is never empty. `context` (a dict) carries
+    stage-specific diagnostics and is serialized to VARIANT at insert."""
+    now = _now_utc()
+    dated = len(slug) >= 8 and slug[:8].isdigit()
+    return {"game_id": slug, "season": season,
+            "game_date": f"{slug[:4]}-{slug[4:6]}-{slug[6:8]}" if dated else None,
+            "home_team_abbr": slug[-3:] if len(slug) >= 3 else None,
+            "away_team_abbr": None, "reason_class": reason_class,
+            "failure_stage": failure_stage, "detail": detail, "context": context,
+            "first_seen_at": now, "last_seen_at": now, "attempts": 1,
+            "status": "open", "resolution_note": None}
+
+
+def _finding(detector, scope, subject_id, detail, severity="warn", metric_value=None):
+    """A pending-judgment audit_findings record (the 'system finds; we judge'
+    inbox). finding_key dedupes a (detector, subject) across runs."""
+    now = _now_utc()
+    return {"finding_key": f"{detector}:{subject_id}", "detector": detector,
+            "scope": scope, "subject_id": subject_id, "severity": severity,
+            "detail": detail, "metric_value": metric_value,
+            "first_seen_at": now, "last_seen_at": now, "status": "open", "note": None}
+
+
 def build_game(slug, season, series_rows):
-    """Fetch + flatten one game into a dict of row-lists, or ('quarantine', reason)."""
+    """Fetch + flatten one game into a dict of row-lists, or ('quarantine', row).
+
+    On success the dict includes an 'audit_findings' list — load-time anomalies
+    we ADMIT but flag for judgment (e.g. ambiguous home/away orientation)."""
     html = _fetch_retry(f"{BASE_URL}/boxscores/{slug}.html")
     visible, hidden = parse_tables_with_comments(html)
     home, away = _find_team_abbrs_from_tables(slug, visible)
     hb, ab = visible.get(f"box-{home}-game-basic"), visible.get(f"box-{away}-game-basic")
     if hb is None or ab is None or hidden.get("line_score") is None:
-        return ("quarantine", "missing required table (basic/line_score)")
+        missing = [n for n, ok in (("home_basic", hb is not None), ("away_basic", ab is not None),
+                                   ("line_score", hidden.get("line_score") is not None)) if not ok]
+        return ("quarantine", quarantine_row(slug, season, "missing_table", "parse",
+                f"missing required table(s): {', '.join(missing)}", {"missing_tables": missing}))
 
     soup = BeautifulSoup(html, "html5lib")
     h1 = soup.find("h1").get_text(" ", strip=True) if soup.find("h1") else ""
@@ -327,7 +360,7 @@ def build_game(slug, season, series_rows):
 
     raw = flatten_game_row(slug, home, away, hb, ab, hidden.get("line_score"))
     if raw is None:
-        return ("quarantine", "no team totals")
+        return ("quarantine", quarantine_row(slug, season, "no_team_totals", "flatten", "no team totals"))
     game_row = {k: raw.get(k) for k in GAME_COLS}
     game_row.update(season=season, season_type=season_type, round=round_,
                     series_slug=series_slug, game_in_series=gis,
@@ -348,7 +381,8 @@ def build_game(slug, season, series_rows):
     # resolution), not a dedup.
     blockers, caveats = guard(game_row, basics)
     if blockers:
-        return ("quarantine", "; ".join(blockers[:5]))
+        return ("quarantine", quarantine_row(slug, season, "guard_blocker", "guard",
+                "; ".join(blockers[:5]), {"blockers": blockers}))
 
     advs = (flatten_advanced(slug, visible.get(f"box-{home}-game-advanced"), anchors)
             + flatten_advanced(slug, visible.get(f"box-{away}-game-advanced"), anchors))
@@ -371,9 +405,23 @@ def build_game(slug, season, series_rows):
                                 "magnitude": max(diffs)})
     now = _now_utc()
     caveat_rows = [{"game_id": slug, "fetched_at": now, **c} for c in caveats]
+    # Orientation: home is BR-canonically the slug's trailing code. When the box
+    # tables disagree (slug-home absent -> _find_team_abbrs_from_tables guessed by
+    # table order; BR lists AWAY first, so a swap is possible), ADMIT the game but
+    # record a finding for judgment instead of silently trusting the guess.
+    findings = []
+    slug_home = slug[-3:]
+    if home != slug_home:
+        findings.append(_finding("orientation", "game", slug,
+            f"home from box tables={home} != slug home={slug_home} "
+            f"(order-fallback used; BR lists away first — possible swap)"))
+    if not away:
+        findings.append(_finding("orientation", "game", slug,
+            f"away team abbr empty (only one box table parsed; home={home})"))
     return {"games": [game_row], "player_box_basic": basics, "player_box_advanced": advs,
             "line_scores": [line] if line else [], "game_officials": flatten_officials(slug, meta),
-            "game_inactives": flatten_inactives(slug, meta), "data_caveats": caveat_rows}
+            "game_inactives": flatten_inactives(slug, meta), "data_caveats": caveat_rows,
+            "audit_findings": findings}
 
 
 # ───────────────────────────────────────────────────────────── load
@@ -403,9 +451,14 @@ SERIES_COLS = ["series_slug", "season", "round", "round_seq", "conference", "tea
 OFFICIALS_COLS = ["game_id", "official_id", "official_name", "fetched_at"]
 INACTIVES_COLS = ["game_id", "player_id", "player_name", "team_abbr", "fetched_at"]
 CAVEAT_COLS = ["game_id", "player_id", "caveat_type", "detail", "magnitude", "fetched_at"]
+FINDING_COLS = ["finding_key", "detector", "scope", "subject_id", "severity", "detail",
+                "metric_value", "first_seen_at", "last_seen_at", "status", "note"]
+QUARANTINE_COLS = ["game_id", "season", "game_date", "home_team_abbr", "away_team_abbr",
+                   "reason_class", "failure_stage", "detail", "context", "first_seen_at",
+                   "last_seen_at", "attempts", "status", "resolution_note"]
 COLS = {"games": GAME_COLS, "player_box_basic": BASIC_COLS, "player_box_advanced": ADV_COLS,
         "line_scores": LINE_COLS, "game_officials": OFFICIALS_COLS, "game_inactives": INACTIVES_COLS,
-        "data_caveats": CAVEAT_COLS}
+        "data_caveats": CAVEAT_COLS, "audit_findings": FINDING_COLS}
 
 
 def insert(cur, table, rows, cols=None):
@@ -416,3 +469,27 @@ def insert(cur, table, rows, cols=None):
     cur.executemany(f"INSERT INTO ZK_NBA_V2.FLAT.{table} ({','.join(cols)}) VALUES ({ph})",
                     [tuple(r.get(c) for c in cols) for r in rows])
     return len(rows)
+
+
+def insert_quarantine(cur, rows):
+    """Insert rich quarantine rows; the dict `context` is serialized to VARIANT via
+    PARSE_JSON. Re-attempts are prevented upstream by the checkpoint, so a plain
+    INSERT is dup-safe — the worklist DRAINS via drain_quarantine on later success."""
+    if not rows:
+        return 0
+    ph = ",".join("PARSE_JSON(%s)" if c == "context" else "%s" for c in QUARANTINE_COLS)
+    params = [tuple(json.dumps(r.get(c)) if c == "context" and r.get(c) is not None
+                    else r.get(c) for c in QUARANTINE_COLS) for r in rows]
+    cur.executemany(f"INSERT INTO ZK_NBA_V2.FLAT.quarantine ({','.join(QUARANTINE_COLS)}) "
+                    f"VALUES ({ph})", params)
+    return len(rows)
+
+
+def drain_quarantine(cur, game_ids):
+    """Remove quarantine rows for games that have now loaded successfully — the
+    worklist drains as parser fixes land. No-op on the legacy schema is harmless."""
+    if not game_ids:
+        return
+    qs = ",".join(["%s"] * len(game_ids))
+    cur.execute(f"DELETE FROM ZK_NBA_V2.FLAT.quarantine WHERE game_id IN ({qs})",
+                tuple(game_ids))

@@ -30,7 +30,7 @@ log = logging.getLogger("load_season")
 log.setLevel(logging.INFO)
 
 TABLES = ["games", "player_box_basic", "player_box_advanced", "line_scores",
-          "game_officials", "game_inactives", "data_caveats"]
+          "game_officials", "game_inactives", "data_caveats", "audit_findings"]
 BATCH = 40
 
 
@@ -39,6 +39,8 @@ def load_batch(conn, buckets):
     try:
         for t in TABLES:
             v2.insert(cur, t, buckets[t])
+        # drain: a game that loads successfully leaves the quarantine worklist
+        v2.drain_quarantine(cur, [r["game_id"] for r in buckets["games"]])
         conn.commit()
     finally:
         cur.close()
@@ -54,8 +56,8 @@ def main():
     conn = connect()
     try:
         cur = conn.cursor()
-        cur.execute("CREATE TABLE IF NOT EXISTS ZK_NBA_V2.FLAT.quarantine "
-                    "(game_id STRING, reason STRING, fetched_at TIMESTAMP_NTZ)")
+        # quarantine table is the rich game-grain worklist (sql/v2/060_quarantine.sql,
+        # applied at the post-backfill gate); no ad-hoc CREATE here.
         cur.execute("SELECT game_id FROM ZK_NBA_V2.FLAT.games WHERE season=%s", (season,))
         done = {r[0] for r in cur.fetchall()}
         cur.execute("SELECT game_id FROM ZK_NBA_V2.FLAT.quarantine")
@@ -83,10 +85,10 @@ def main():
             try:
                 res = v2.build_game(slug, season, series)
             except Exception as exc:  # noqa: BLE001
-                res = ("quarantine", f"error: {exc!r}")
+                res = ("quarantine", v2.quarantine_row(slug, season, "fetch_error", "fetch", repr(exc)))
             if isinstance(res, tuple):
-                quarantined.append((slug, res[1])); n_q += 1
-                log.warning("[%d/%d] %s QUARANTINED: %s", i, len(slugs), slug, res[1])
+                quarantined.append(res[1]); n_q += 1
+                log.warning("[%d/%d] %s QUARANTINED: %s", i, len(slugs), slug, res[1]["detail"])
                 continue
             for t in TABLES:
                 buckets[t].extend(res[t])
@@ -99,16 +101,14 @@ def main():
             load_batch(conn, buckets)
         if quarantined:
             cur = conn.cursor()
-            now = v2._now_utc()
-            cur.executemany("INSERT INTO ZK_NBA_V2.FLAT.quarantine VALUES (%s,%s,%s)",
-                            [(g, r, now) for g, r in quarantined])
+            v2.insert_quarantine(cur, quarantined)
             conn.commit(); cur.close()
     finally:
         conn.close()
 
     print(f"\nDONE season={season}. loaded={n_ok} quarantined={n_q}")
-    for g, r in quarantined[:20]:
-        print(f"  Q {g}: {r}")
+    for row in quarantined[:20]:
+        print(f"  Q {row['game_id']}: {row['detail']}")
 
 
 if __name__ == "__main__":

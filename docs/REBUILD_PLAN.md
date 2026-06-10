@@ -496,6 +496,32 @@ Then built **`dev/_audit.py`** — the standing anomaly-surfacing gate (`REBUILD
 
 ---
 
+### Self-aware data: the exception-ledger architecture (2026-06-10)
+
+A second "what did we miss?" pass — this time on the *audit itself* — found its deepest blind spot is the same as the bias it's named for: **every detector reads rows that exist; none establish that the rows that *should* exist *do*.** The audit's universe is `SELECT DISTINCT season FROM games` — it is structurally blind to **absence** (a dropped game, an un-enumerated game, an absent season). `quarantine` catches games we *tried and rejected*; nothing caught games we *never tried*.
+
+The fix is an architecture, not a detector. The system has exactly **three dispositions toward a game**, each a typed ledger sharing one column vocabulary (`subject, type, detail, magnitude, first_seen/last_seen, status`); promotion between them is a row move:
+
+| Ledger | Disposition | Grain |
+|---|---|---|
+| `quarantine` | **excluded** (failed the gate) | game (= slug) |
+| `data_caveats` | **included, flagged** (real but known-imperfect) | game / player |
+| `audit_findings` | **pending judgment** (system found it, we haven't ruled) | season / game / column / player |
+
+Three tables, **not one** (unification would be the overengineering we keep guarding against — disposition toward the dataset is a real semantic boundary). Plus two guards that keep the ledgers honest:
+- **Completeness** — the only check that looks at what *isn't* there. Shipped: schedule-reconciliation (`enumerate == loaded ∪ quarantined`; residual = silently dropped — catches the *demonstrated* failure mode, free). **Staged** (own phase, needs a standings fetcher): the independent `Σ(team G)/2` oracle that also catches a true gap in BR's schedule source.
+- **Caveat honesty** — (a) dimension-scoped suppression: a caveat silences *only its own* detector, so a caveated game still runs every other check ("caveated ∴ all-clear" is a category error); (b) a caveat-rate meta-detector: proliferation of one caveat type = a systematic bug wearing a per-game costume (baseline ~0.14% = 9/6243; a season >2–3% flags).
+
+**Quarantine schema (locked)** — game-grain, because the slug deterministically yields `game_date`/`home_team_abbr`/`season` *even on total failure*, so a quarantine row is never empty. Typed axes we always slice on (`game_id, season, game_date, home/away_abbr, reason_class, failure_stage, status`) + a `VARIANT context` for stage-specific diagnostics (`blockers`, `missing_tables`, `http_status`); a field graduates from the blob to a column when a query earns it. It's a **worklist, not a graveyard**: loaders `MERGE` on `game_id` and **DELETE on later success**, so a falling open-quarantine count is a real signal of parser progress. `DERIVED.vw_quarantine_rate` (per season × reason × stage) is the completeness ally — a rate spike is a systematic parse bug masquerading as "that era was just bad."
+
+**Orientation tripwire** (tier-2 home/away): `_find_team_abbrs_from_tables` silently guesses by table-order when the slug-home isn't among the box tables (BR lists *away* first → possible swap), logging only a warning the audit never reads. Fix is fail-loud-at-the-cause: emit an `orientation` finding (both candidates recorded) rather than guess; audit backstop asserts `home_team_abbr = RIGHT(game_id,3)` with an allowlist of legitimate slug/abbr divergences *learned empirically* from what the finding surfaces — not guessed up front.
+
+**Application split (protecting the running 1947–59 backfill):** that job carries a frozen `5a8e7a1` code snapshot, so new commits can't perturb it. Brand-new `audit_findings` + read-only detectors apply now; the live `quarantine` migration + loader swap deploy at the post-backfill gate so the *next* chunk picks up the new loader — never mid-`INSERT`.
+
+> ✋ **Gate: each piece validates against the 1947–59 chunk as it lands (test-as-we-go).**
+
+---
+
 ### Phase 4 — Full historical backfill (~3-5 days wall time, ~0 active effort)
 
 **Goal**: populate everything else.
