@@ -212,32 +212,55 @@ def flatten_inactives(slug, meta):
 
 
 # ───────────────────────────────────────────────────────────── guard
-def guard(game_row, basic_rows) -> list[str]:
-    """Basketball domain-range checks. Empty list = clean."""
-    v = []
+# Max |player_pts_sum - team_total| admitted as a CAVEAT (real game, known source
+# imperfection — see sql/v2/050_caveats.sql). Larger = "egregious" -> quarantine for
+# investigation (parse-bug territory). NOT a silent tolerance: admitted games get an
+# explicit data_caveats row. Tunable.
+CAVEAT_RECON_MAX = 6
+
+
+def guard(game_row, basic_rows):
+    """Return (blockers, caveats). blockers => quarantine (bad/impossible data).
+    caveats => admit the game but record a typed data_caveats row (real game, known
+    imperfection)."""
+    blockers, caveats = [], []
     hp, ap = game_row["home_pts"], game_row["away_pts"]
     if hp is None or ap is None:
-        v.append("missing team points")
+        blockers.append("missing team points")
     elif hp == ap:
-        v.append(f"tie game ({hp}={ap})")
+        blockers.append(f"tie game ({hp}={ap})")  # no ties in basketball
     for r in basic_rows:
         for made, att in (("fgm", "fga"), ("fg3m", "fg3a"), ("ftm", "fta")):
             if r[made] is not None and r[att] is not None and r[made] > r[att]:
-                v.append(f"{r['player_name']}: {made}>{att}")
+                blockers.append(f"{r['player_name']}: {made}>{att}")
         if r["pts"] is not None and not (0 <= r["pts"] <= 105):
-            v.append(f"{r['player_name']}: pts {r['pts']}")
+            blockers.append(f"{r['player_name']}: pts {r['pts']}")
         if r["fg_pct"] is not None and not (0 <= r["fg_pct"] <= 1):
-            v.append(f"{r['player_name']}: fg_pct {r['fg_pct']}")
+            blockers.append(f"{r['player_name']}: fg_pct {r['fg_pct']}")
+    # team-total reconciliation: small mismatch = source discrepancy (caveat-admit);
+    # large = bug-sized (quarantine).
     for abbr, total in ((game_row["home_team_abbr"], hp), (game_row["away_team_abbr"], ap)):
         s = sum(r["pts"] or 0 for r in basic_rows if r["team_abbr"] == abbr)
-        # STRICT: any mismatch quarantines. The guard flags; a human makes the call
-        # on the quarantined set (some old-era games carry source-level scorekeeping
-        # discrepancies — BR's own Team Totals != its player rows). We do NOT tolerate
-        # silently, because that would also mask real parse bugs and hide the imperfect
-        # games instead of surfacing them.
         if total is not None and s != total:
-            v.append(f"{abbr}: player-pts {s} != team {total}")
-    return v
+            diff = abs(s - total)
+            if diff > CAVEAT_RECON_MAX:
+                blockers.append(f"{abbr}: player-pts {s} != team {total} (>{CAVEAT_RECON_MAX})")
+            else:
+                caveats.append({"player_id": None, "caveat_type": "reconciliation_discrepancy",
+                                "detail": f"{abbr}: player-pts {s} != team total {total} "
+                                          f"(BR team total vs incomplete historical player rows)",
+                                "magnitude": diff})
+    # player_id collision: two distinct players sharing a resolved slug (e.g. two
+    # "George Johnson" in one game). Real players — admit both, flag it.
+    seen = {}
+    for r in basic_rows:
+        seen[r["player_id"]] = seen.get(r["player_id"], 0) + 1
+    for pid, n in seen.items():
+        if n > 1:
+            caveats.append({"player_id": pid, "caveat_type": "player_id_collision",
+                            "detail": f"{n} rows share player_id {pid} (same-name players; needs per-row slug resolution)",
+                            "magnitude": n})
+    return blockers, caveats
 
 
 # ───────────────────────────────────────────────────────────── bracket
@@ -323,18 +346,34 @@ def build_game(slug, season, series_rows):
     # two "George Johnson"s, GSW vs HOU). Dedup would drop a real player and break
     # reconciliation. The collision (rare) is a Deferred-backlog fix (per-row slug
     # resolution), not a dedup.
-    violations = guard(game_row, basics)
-    if violations:
-        return ("quarantine", "; ".join(violations[:5]))
+    blockers, caveats = guard(game_row, basics)
+    if blockers:
+        return ("quarantine", "; ".join(blockers[:5]))
 
     advs = (flatten_advanced(slug, visible.get(f"box-{home}-game-advanced"), anchors)
             + flatten_advanced(slug, visible.get(f"box-{away}-game-advanced"), anchors))
     line = flatten_line_score(slug, hidden.get("line_score"))
     if line:
         line.pop("source", None)
+        # line-score reconciliation: same source-discrepancy family as the box
+        # (old line scores' quarters/total don't always agree with the final). Admit
+        # + caveat rather than flag forever.
+        for side, gtot in (("home", game_row["home_pts"]), ("away", game_row["away_pts"])):
+            qsum = sum((line.get(f"{side}_q{q}") or 0) for q in (1, 2, 3, 4)) \
+                 + sum((line.get(f"{side}_ot{o}") or 0) for o in (1, 2, 3, 4))
+            ltot = line.get(f"{side}_pts")
+            diffs = [abs(qsum - ltot)] if ltot is not None and qsum != ltot else []
+            if ltot is not None and gtot is not None and ltot != gtot:
+                diffs.append(abs(ltot - gtot))
+            if diffs:
+                caveats.append({"player_id": None, "caveat_type": "line_score_discrepancy",
+                                "detail": f"{side} line score: quarters={qsum} total={ltot} game={gtot} (source discrepancy)",
+                                "magnitude": max(diffs)})
+    now = _now_utc()
+    caveat_rows = [{"game_id": slug, "fetched_at": now, **c} for c in caveats]
     return {"games": [game_row], "player_box_basic": basics, "player_box_advanced": advs,
             "line_scores": [line] if line else [], "game_officials": flatten_officials(slug, meta),
-            "game_inactives": flatten_inactives(slug, meta)}
+            "game_inactives": flatten_inactives(slug, meta), "data_caveats": caveat_rows}
 
 
 # ───────────────────────────────────────────────────────────── load
@@ -363,8 +402,10 @@ SERIES_COLS = ["series_slug", "season", "round", "round_seq", "conference", "tea
                "team_b_abbr", "winner_abbr", "games_played", "fetched_at"]
 OFFICIALS_COLS = ["game_id", "official_id", "official_name", "fetched_at"]
 INACTIVES_COLS = ["game_id", "player_id", "player_name", "team_abbr", "fetched_at"]
+CAVEAT_COLS = ["game_id", "player_id", "caveat_type", "detail", "magnitude", "fetched_at"]
 COLS = {"games": GAME_COLS, "player_box_basic": BASIC_COLS, "player_box_advanced": ADV_COLS,
-        "line_scores": LINE_COLS, "game_officials": OFFICIALS_COLS, "game_inactives": INACTIVES_COLS}
+        "line_scores": LINE_COLS, "game_officials": OFFICIALS_COLS, "game_inactives": INACTIVES_COLS,
+        "data_caveats": CAVEAT_COLS}
 
 
 def insert(cur, table, rows, cols=None):

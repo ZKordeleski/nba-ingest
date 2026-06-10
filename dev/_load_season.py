@@ -30,7 +30,7 @@ log = logging.getLogger("load_season")
 log.setLevel(logging.INFO)
 
 TABLES = ["games", "player_box_basic", "player_box_advanced", "line_scores",
-          "game_officials", "game_inactives"]
+          "game_officials", "game_inactives", "data_caveats"]
 BATCH = 40
 
 

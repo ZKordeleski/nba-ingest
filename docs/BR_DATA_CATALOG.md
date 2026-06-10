@@ -236,6 +236,29 @@ A 1972-73 `box-*-game-basic` table *renders* `STL BLK TOV ORB DRB` headers, but 
 
 ---
 
+### Source reconciliation discrepancies (old box scores) — 2026-06-10
+
+Some pre-~1970s games have a small mismatch between a team's total and the sum of
+its player rows (e.g. 1959-60 Lakers: Baylor 20 + … = 101, but BR's Team Totals =
+103). **Root cause (confirmed via BR's own announcements): not our bug.** BR has
+been adding *unofficial* game/player totals reconstructed from historical records —
+team totals come from official league records, while player-level box scores were
+separately sourced and are incomplete pre-1985-86. When old player data has gaps,
+the player sum falls a few points short of the (known) team total.
+
+Handling (Zack's call): **admit the real game + record a `reconciliation_discrepancy`
+row in `FLAT.data_caveats`** (surfaced via `DERIVED.vw_data_caveats`) rather than
+silently tolerate (blunts the guard) or exclude (loses real games). Egregious /
+bug-sized mismatches (> `CAVEAT_RECON_MAX`) still quarantine. Magnitude is recorded
+so future cleanup (or BR's ongoing unofficial-total additions) is easy to apply.
+
+Sources:
+- Sports-Reference — "Thousands of Unofficial Game-Level Totals Added to Basketball Reference": https://www.sports-reference.com/blog/
+- Sports-Reference — "Several Dozen Newly Discovered Unofficial Totals Added" (2026-03): https://www.sports-reference.com/blog/2026/03/several-dozen-newly-discovered-unofficial-totals-added-to-basketball-reference/
+- Sports-Reference — "Box Score For Every Game in NBA History" (2012): https://www.sports-reference.com/blog/2012/01/box-score-for-every-game-in-nba-history/
+
+---
+
 ## 3. Cross-page navigation map
 
 The link graph between page types. The resolvers depend on this (e.g., `player_id` resolver follows the boxscore → player page → `stats.nba.com` external-link chain).

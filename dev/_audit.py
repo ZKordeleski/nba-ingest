@@ -54,31 +54,39 @@ def main():
         seasons = [r[0] for r in execute(conn, f"SELECT DISTINCT season FROM {DB}.games ORDER BY season")]
         print(f"AUDIT ZK_NBA_V2 — seasons present: {seasons}\n")
 
-        # 1. UNIQUENESS
-        for tbl, key in [("games", "game_id"), ("player_box_basic", "game_id||'|'||player_id"),
-                         ("player_box_advanced", "game_id||'|'||player_id"), ("line_scores", "game_id"),
-                         ("playoff_series", "series_slug")]:
+        # 1. UNIQUENESS  (excluding rows adjudicated as player_id_collision caveats)
+        for tbl, key in [("games", "game_id"), ("player_box_advanced", "game_id||'|'||player_id"),
+                         ("line_scores", "game_id"), ("playoff_series", "series_slug")]:
             d = q1(conn, f"SELECT COUNT(*)-COUNT(DISTINCT {key}) FROM {DB}.{tbl}")
             (flag if d else ok)(f"uniqueness {tbl}", f"{d} duplicate keys")
+        # player_box_basic: count dup (game_id,player_id) NOT explained by a collision caveat
+        pbb_dups = q1(conn, f"""SELECT COUNT(*) FROM (
+            SELECT game_id, player_id FROM {DB}.player_box_basic GROUP BY 1,2 HAVING COUNT(*)>1) d
+          WHERE NOT EXISTS (SELECT 1 FROM {DB}.data_caveats c
+            WHERE c.caveat_type='player_id_collision' AND c.game_id=d.game_id AND c.player_id=d.player_id)""")
+        (flag if pbb_dups else ok)("uniqueness player_box_basic (un-caveated)", f"{pbb_dups} unexplained dup keys")
 
-        # 2. RECONCILE
+        # 2. RECONCILE  (excluding games adjudicated as reconciliation_discrepancy caveats)
         box_vs_team = q1(conn, f"""
           WITH tp AS (SELECT game_id, team_abbr, SUM(pts) s FROM {DB}.player_box_basic GROUP BY 1,2)
           SELECT COUNT(*) FROM tp JOIN {DB}.games g ON tp.game_id=g.game_id
           WHERE tp.s <> CASE WHEN tp.team_abbr=g.home_team_abbr THEN g.home_pts
-                             WHEN tp.team_abbr=g.away_team_abbr THEN g.away_pts END""")
-        (flag if box_vs_team else ok)("reconcile box vs team total", f"{box_vs_team} mismatched team-games")
+                             WHEN tp.team_abbr=g.away_team_abbr THEN g.away_pts END
+            AND tp.game_id NOT IN (SELECT game_id FROM {DB}.data_caveats WHERE caveat_type='reconciliation_discrepancy')""")
+        (flag if box_vs_team else ok)("reconcile box vs team total (un-caveated)", f"{box_vs_team} unexplained mismatches")
 
         ls_quarters = q1(conn, f"""SELECT COUNT(*) FROM {DB}.line_scores
-          WHERE COALESCE(home_q1,0)+COALESCE(home_q2,0)+COALESCE(home_q3,0)+COALESCE(home_q4,0)
+          WHERE (COALESCE(home_q1,0)+COALESCE(home_q2,0)+COALESCE(home_q3,0)+COALESCE(home_q4,0)
                 +COALESCE(home_ot1,0)+COALESCE(home_ot2,0)+COALESCE(home_ot3,0)+COALESCE(home_ot4,0) <> home_pts
              OR COALESCE(away_q1,0)+COALESCE(away_q2,0)+COALESCE(away_q3,0)+COALESCE(away_q4,0)
-                +COALESCE(away_ot1,0)+COALESCE(away_ot2,0)+COALESCE(away_ot3,0)+COALESCE(away_ot4,0) <> away_pts""")
-        (flag if ls_quarters else ok)("reconcile line-score quarters vs final", f"{ls_quarters} games where periods != total")
+                +COALESCE(away_ot1,0)+COALESCE(away_ot2,0)+COALESCE(away_ot3,0)+COALESCE(away_ot4,0) <> away_pts)
+            AND game_id NOT IN (SELECT game_id FROM {DB}.data_caveats WHERE caveat_type='line_score_discrepancy')""")
+        (flag if ls_quarters else ok)("reconcile line-score quarters vs final (un-caveated)", f"{ls_quarters} unexplained")
 
         ls_vs_games = q1(conn, f"""SELECT COUNT(*) FROM {DB}.line_scores l JOIN {DB}.games g USING(game_id)
-          WHERE l.home_pts<>g.home_pts OR l.away_pts<>g.away_pts""")
-        (flag if ls_vs_games else ok)("reconcile line-score vs games total", f"{ls_vs_games} games disagree")
+          WHERE (l.home_pts<>g.home_pts OR l.away_pts<>g.away_pts)
+            AND l.game_id NOT IN (SELECT game_id FROM {DB}.data_caveats WHERE caveat_type='line_score_discrepancy')""")
+        (flag if ls_vs_games else ok)("reconcile line-score vs games total (un-caveated)", f"{ls_vs_games} unexplained")
 
         # 3. RANGE
         rng = q1(conn, f"""SELECT COUNT(*) FROM {DB}.player_box_basic

@@ -35,7 +35,7 @@ log = logging.getLogger("settle")
 log.setLevel(logging.INFO)
 
 TABLES = ["games", "player_box_basic", "player_box_advanced", "line_scores",
-          "game_officials", "game_inactives"]
+          "game_officials", "game_inactives", "data_caveats"]
 
 
 def season_of(d: date) -> int:
