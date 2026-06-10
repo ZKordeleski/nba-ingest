@@ -223,50 +223,58 @@ CAVEAT_LINESCORE_MAX = 6    # |quarters_sum - line_total| or |line_total - game_
 CAVEAT_COLLISION_MAX = 4    # rows sharing one resolved player_id (2-3 = same-name players; more = slug bug)
 
 
+def _issue(kind, caveat_type, detail, magnitude=None, hard=False, player_id=None):
+    """One thing a guardrail flagged. hard=True => impossible/corrupt data (a real
+    bug); hard=False => a discrepancy that MIGHT be an approvable source imperfection.
+    `hard` is only a REVIEW HINT — under the strict rule ANY issue quarantines the
+    game; a human re-admits it (recording this as a caveat) via dev/_approve.py."""
+    return {"kind": kind, "caveat_type": caveat_type, "detail": detail,
+            "magnitude": magnitude, "hard": hard, "player_id": player_id}
+
+
 def guard(game_row, basic_rows):
-    """Return (blockers, caveats). blockers => quarantine (bad/impossible data).
-    caveats => admit the game but record a typed data_caveats row (real game, known
-    imperfection)."""
-    blockers, caveats = [], []
+    """Return a list of ISSUES (empty == clean). The guardrail is BINARY at ingest:
+    any issue quarantines the game for review. Caveats are NOT produced here — a
+    caveat is written only when a human APPROVES a quarantined game (dev/_approve.py),
+    never as an automatic ingest disposition. The CAVEAT_* ceilings survive only as
+    the `hard` triage hint for the reviewer, never as admit gates."""
+    issues = []
     hp, ap = game_row["home_pts"], game_row["away_pts"]
     if hp is None or ap is None:
-        blockers.append("missing team points")
+        issues.append(_issue("missing_points", "missing_points", "missing team points", hard=True))
     elif hp == ap:
-        blockers.append(f"tie game ({hp}={ap})")  # no ties in basketball
+        issues.append(_issue("tie_game", "tie_game", f"tie game ({hp}={ap})", hard=True))  # no ties in basketball
     for r in basic_rows:
         for made, att in (("fgm", "fga"), ("fg3m", "fg3a"), ("ftm", "fta")):
             if r[made] is not None and r[att] is not None and r[made] > r[att]:
-                blockers.append(f"{r['player_name']}: {made}>{att}")
+                issues.append(_issue("impossible_box", "impossible_box",
+                                     f"{r['player_name']}: {made}>{att}", hard=True))
         if r["pts"] is not None and not (0 <= r["pts"] <= 105):
-            blockers.append(f"{r['player_name']}: pts {r['pts']}")
+            issues.append(_issue("impossible_box", "impossible_box",
+                                 f"{r['player_name']}: pts {r['pts']}", magnitude=r["pts"], hard=True))
         if r["fg_pct"] is not None and not (0 <= r["fg_pct"] <= 1):
-            blockers.append(f"{r['player_name']}: fg_pct {r['fg_pct']}")
-    # team-total reconciliation: small mismatch = source discrepancy (caveat-admit);
-    # large = bug-sized (quarantine).
+            issues.append(_issue("impossible_box", "impossible_box",
+                                 f"{r['player_name']}: fg_pct {r['fg_pct']}", hard=True))
+    # team-total reconciliation: ANY mismatch is an issue (the small-mismatch
+    # auto-admit is exactly what we removed). `hard` flags bug-sized for the reviewer.
     for abbr, total in ((game_row["home_team_abbr"], hp), (game_row["away_team_abbr"], ap)):
         s = sum(r["pts"] or 0 for r in basic_rows if r["team_abbr"] == abbr)
         if total is not None and s != total:
             diff = abs(s - total)
-            if diff > CAVEAT_RECON_MAX:
-                blockers.append(f"{abbr}: player-pts {s} != team {total} (>{CAVEAT_RECON_MAX})")
-            else:
-                caveats.append({"player_id": None, "caveat_type": "reconciliation_discrepancy",
-                                "detail": f"{abbr}: player-pts {s} != team total {total} "
-                                          f"(BR team total vs incomplete historical player rows)",
-                                "magnitude": diff})
+            issues.append(_issue("reconciliation", "reconciliation_discrepancy",
+                f"{abbr}: player-pts {s} != team total {total} (BR team total vs player rows)",
+                magnitude=diff, hard=diff > CAVEAT_RECON_MAX))
     # player_id collision: two distinct players sharing a resolved slug (e.g. two
-    # "George Johnson" in one game). Real players — admit both, flag it.
+    # "George Johnson" in one game). Real players, but flagged for review.
     seen = {}
     for r in basic_rows:
         seen[r["player_id"]] = seen.get(r["player_id"], 0) + 1
     for pid, n in seen.items():
-        if n > CAVEAT_COLLISION_MAX:
-            blockers.append(f"player_id {pid}: {n} rows share one slug (>{CAVEAT_COLLISION_MAX}) — slug-resolution bug")
-        elif n > 1:
-            caveats.append({"player_id": pid, "caveat_type": "player_id_collision",
-                            "detail": f"{n} rows share player_id {pid} (same-name players; needs per-row slug resolution)",
-                            "magnitude": n})
-    return blockers, caveats
+        if n > 1:
+            issues.append(_issue("collision", "player_id_collision",
+                f"{n} rows share player_id {pid} (same-name players; needs per-row slug resolution)",
+                magnitude=n, hard=n > CAVEAT_COLLISION_MAX, player_id=pid))
+    return issues
 
 
 # ───────────────────────────────────────────────────────────── bracket
@@ -330,21 +338,13 @@ def quarantine_row(slug, season, reason_class, failure_stage, detail, context=No
             "status": "open", "resolution_note": None}
 
 
-def _finding(detector, scope, subject_id, detail, severity="warn", metric_value=None):
-    """A pending-judgment audit_findings record (the 'system finds; we judge'
-    inbox). finding_key dedupes a (detector, subject) across runs."""
-    now = _now_utc()
-    return {"finding_key": f"{detector}:{subject_id}", "detector": detector,
-            "scope": scope, "subject_id": subject_id, "severity": severity,
-            "detail": detail, "metric_value": metric_value,
-            "first_seen_at": now, "last_seen_at": now, "status": "open", "note": None}
-
-
-def build_game(slug, season, series_rows):
+def build_game(slug, season, series_rows, approve=False):
     """Fetch + flatten one game into a dict of row-lists, or ('quarantine', row).
 
-    On success the dict includes an 'audit_findings' list — load-time anomalies
-    we ADMIT but flag for judgment (e.g. ambiguous home/away orientation)."""
+    STRICT guardrail: if anything is flagged, the game is quarantined for review —
+    it is NEVER admitted-on-caveat. A caveat is written only when approve=True (the
+    human-driven dev/_approve.py path re-admits a reviewed game and records its known
+    imperfections). The default ingest path can never subvert a guardrail."""
     html = _fetch_retry(f"{BASE_URL}/boxscores/{slug}.html")
     visible, hidden = parse_tables_with_comments(html)
     home, away = _find_team_abbrs_from_tables(slug, visible)
@@ -384,21 +384,15 @@ def build_game(slug, season, series_rows):
     # two "George Johnson"s, GSW vs HOU). Dedup would drop a real player and break
     # reconciliation. The collision (rare) is a Deferred-backlog fix (per-row slug
     # resolution), not a dedup.
-    blockers, caveats = guard(game_row, basics)
-    if blockers:
-        return ("quarantine", quarantine_row(slug, season, "guard_blocker", "guard",
-                "; ".join(blockers[:5]), {"blockers": blockers}))
+    issues = guard(game_row, basics)
 
     advs = (flatten_advanced(slug, visible.get(f"box-{home}-game-advanced"), anchors)
             + flatten_advanced(slug, visible.get(f"box-{away}-game-advanced"), anchors))
     line = flatten_line_score(slug, hidden.get("line_score"))
     if line:
         line.pop("source", None)
-        # line-score reconciliation: same source-discrepancy FAMILY as the box, with
-        # the same SYMMETRIC bound — a small quarters/total gap is a real source quirk
-        # (admit + caveat); a bug-sized gap (incomplete quarter parse, sources disagree
-        # on the final) is QUARANTINED for human review, never silently caveated.
-        ls_caveats, ls_blockers = [], []
+        # ANY quarters/total or total/game gap is an issue (the small-gap auto-admit
+        # was removed). `hard` flags bug-sized gaps (incomplete quarter parse, etc.).
         for side, gtot in (("home", game_row["home_pts"]), ("away", game_row["away_pts"])):
             qsum = sum((line.get(f"{side}_q{q}") or 0) for q in (1, 2, 3, 4)) \
                  + sum((line.get(f"{side}_ot{o}") or 0) for o in (1, 2, 3, 4))
@@ -408,35 +402,35 @@ def build_game(slug, season, series_rows):
                 diffs.append(abs(ltot - gtot))
             if diffs:
                 mag = max(diffs)
-                desc = f"{side} line score: quarters={qsum} total={ltot} game={gtot}"
-                if mag > CAVEAT_LINESCORE_MAX:
-                    ls_blockers.append(f"{desc} (diff {mag} > {CAVEAT_LINESCORE_MAX})")
-                else:
-                    ls_caveats.append({"player_id": None, "caveat_type": "line_score_discrepancy",
-                                       "detail": f"{desc} (source discrepancy)", "magnitude": mag})
-        if ls_blockers:
-            return ("quarantine", quarantine_row(slug, season, "line_score_blocker", "guard",
-                    "; ".join(ls_blockers), {"line_score": ls_blockers}))
-        caveats.extend(ls_caveats)
-    now = _now_utc()
-    caveat_rows = [{"game_id": slug, "fetched_at": now, **c} for c in caveats]
-    # Orientation: home is BR-canonically the slug's trailing code. When the box
-    # tables disagree (slug-home absent -> _find_team_abbrs_from_tables guessed by
-    # table order; BR lists AWAY first, so a swap is possible), ADMIT the game but
-    # record a finding for judgment instead of silently trusting the guess.
-    findings = []
+                issues.append(_issue("line_score", "line_score_discrepancy",
+                    f"{side} line score: quarters={qsum} total={ltot} game={gtot}",
+                    magnitude=mag, hard=mag > CAVEAT_LINESCORE_MAX))
+    # orientation: home is BR-canonically the slug's trailing code. A mismatch (box
+    # tables disagree -> order-fallback guessed; BR lists away first, so a swap is
+    # possible) or an empty opponent is a flag -> review, not silent admission.
     slug_home = slug[-3:]
     if home != slug_home:
-        findings.append(_finding("orientation", "game", slug,
-            f"home from box tables={home} != slug home={slug_home} "
-            f"(order-fallback used; BR lists away first — possible swap)"))
+        issues.append(_issue("orientation", "orientation_discrepancy",
+            f"home from box tables={home} != slug home={slug_home} (possible home/away swap)"))
     if not away:
-        findings.append(_finding("orientation", "game", slug,
+        issues.append(_issue("orientation", "orientation_discrepancy",
             f"away team abbr empty (only one box table parsed; home={home})"))
+
+    # STRICT GUARDRAIL: any issue quarantines for review. A caveat is written ONLY
+    # on approve=True (the human-driven re-admission path), never automatically.
+    if issues and not approve:
+        hard = any(i["hard"] for i in issues)
+        return ("quarantine", quarantine_row(slug, season,
+                "guard_blocker" if hard else "data_discrepancy", "guard",
+                "; ".join(i["detail"] for i in issues[:5]), {"issues": issues}))
+
+    now = _now_utc()
+    caveat_rows = ([{"game_id": slug, "player_id": i["player_id"], "caveat_type": i["caveat_type"],
+                     "detail": i["detail"], "magnitude": i["magnitude"], "fetched_at": now}
+                    for i in issues] if approve else [])
     return {"games": [game_row], "player_box_basic": basics, "player_box_advanced": advs,
             "line_scores": [line] if line else [], "game_officials": flatten_officials(slug, meta),
-            "game_inactives": flatten_inactives(slug, meta), "data_caveats": caveat_rows,
-            "audit_findings": findings}
+            "game_inactives": flatten_inactives(slug, meta), "data_caveats": caveat_rows}
 
 
 # ───────────────────────────────────────────────────────────── load

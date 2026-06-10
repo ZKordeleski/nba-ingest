@@ -1,15 +1,16 @@
--- ZK_NBA_V2 data caveats — the "admit-with-a-flag" surface (Zack's call).
+-- ZK_NBA_V2 data caveats — "a human approved this game knowing this imperfection".
 --
--- Some games are real but carry a known imperfection we consciously admit rather
--- than hide: e.g. BR reconciles team totals from official league records against
--- separately-sourced, incomplete historical player box scores, so old player sums
--- fall a few points short of the known team total (documented provenance, not our
--- bug). Rather than silently tolerate (which would blunt the guard) or exclude
--- (which loses real games), we LOAD the game and record a typed caveat here.
+-- IMPORTANT (2026-06-10, strict guardrail): a caveat is NOT an ingest disposition.
+-- Ingest is binary — clean -> admit; ANY flag -> quarantine (never admit-on-caveat).
+-- A row appears here ONLY when a human reviews a quarantined game and approves it
+-- back via dev/_approve.py, which re-admits the game AND records its flagged issues
+-- as the typed caveats below. So every caveat means a human consciously accepted a
+-- known imperfection (e.g. BR's team total vs incomplete historical player rows; a
+-- same-name player_id collision) — never a guardrail the machine silently waved
+-- through. Bug-sized problems a reviewer rejects simply stay quarantined.
 --
--- This is the single, extensible surface for EVERY "weird caveat born from
--- scraping" — reconciliation discrepancies today, id-collisions (two same-named
--- players sharing a slug), etc. Egregious/bug-sized problems still quarantine.
+-- Extensible surface for EVERY approved "weird thing born from scraping":
+-- reconciliation_discrepancy, line_score_discrepancy, player_id_collision, ...
 
 USE ROLE DEVELOPER_ADMIN;
 USE DATABASE ZK_NBA_V2;
