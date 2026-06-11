@@ -279,7 +279,16 @@ def guard(game_row, basic_rows):
 
 # ───────────────────────────────────────────────────────────── bracket
 def fetch_playoff_series(season: int) -> list[dict]:
-    html = fetch(f"{BASE_URL}/playoffs/NBA_{season}.html")
+    # Optional enrichment: a missing playoffs page must NOT kill the season. BR's
+    # /playoffs/NBA_{year}.html starts at 1950 — the earliest BAA years (1947-49)
+    # 404 here. Fail-soft like enumerate_season_by_schedule: return no bracket, let
+    # the season load; games still get their round from the <h1>, only series-slug
+    # linkage is unavailable for those years. (_fetch_retry also adds transient retry.)
+    try:
+        html = _fetch_retry(f"{BASE_URL}/playoffs/NBA_{season}.html")
+    except requests.HTTPError:
+        log.warning("no playoffs page for %d (404) — loading season without a bracket", season)
+        return []
     slugs = sorted(set(re.findall(rf"/playoffs/({season}-nba-[a-z0-9-]+)\.html", html)))
     rows = []
     for s in slugs:
