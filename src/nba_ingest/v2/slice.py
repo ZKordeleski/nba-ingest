@@ -45,17 +45,26 @@ def _fetch_retry(url: str, tries: int = 3) -> str:
     raise RuntimeError("unreachable")
 
 
+def league_for(season: int) -> str:
+    """BR's league URL prefix. The BAA (1946-47 .. 1948-49 = seasons 1947-1949)
+    predates the 1949 merger and lives under BAA_; 1950+ is NBA_. Evidence (2026-06-10):
+    /leagues/BAA_1947.html, /playoffs/BAA_1947.html, /leagues/BAA_1947_games-november.html
+    all 200; the NBA_1947 forms 404; /playoffs/BAA_1950.html 404s (1950 = first NBA season)."""
+    return "BAA" if season <= 1949 else "NBA"
+
+
 def enumerate_season_by_schedule(season: int) -> list[str]:
     """All game slugs for a season via the league monthly schedule pages.
 
-    Works for any era (defunct franchises included) and is ~9 fetches/season —
+    Works for any era (defunct franchises, BAA included) and is ~9 fetches/season —
     unlike team-page enumeration, which needs current abbrs and misses the NBA
     Cup final (Phase 2 parity delta). Skips months whose page doesn't exist.
     """
+    league = league_for(season)
     seen, out = set(), []
     for month in SEASON_MONTHS:
         try:
-            html = _fetch_retry(f"{BASE_URL}/leagues/NBA_{season}_games-{month}.html")
+            html = _fetch_retry(f"{BASE_URL}/leagues/{league}_{season}_games-{month}.html")
         except requests.HTTPError:
             continue  # off-season / nonexistent month page for this era
         for slug in extract_game_slugs_from_html(html):
@@ -94,6 +103,8 @@ CANONICAL_ROUNDS = [  # most-specific first ("Finals" is a substring of "...Fina
     ("Division Finals", "Division Finals", 3),           # (1970s used divisions, not conferences)
     ("First Round", "First Round", 1),
     ("Play-In", "Play-In", 0),
+    ("Quarterfinals", "Quarterfinals", 1),   # BAA (pre-1950) playoff naming
+    ("Semifinals", "Semifinals", 2),         # BAA bare "Semifinals" (after the conf/div variants above)
     ("Finals", "Finals", 4),
 ]
 
@@ -294,10 +305,11 @@ def fetch_playoff_series(season: int) -> list[dict]:
     # on its own that an anomalous season is fine to admit. _fetch_retry adds transient
     # retry; a real 404 -> PlayoffsPageMissing for the caller to adjudicate.
     try:
-        html = _fetch_retry(f"{BASE_URL}/playoffs/NBA_{season}.html")
+        html = _fetch_retry(f"{BASE_URL}/playoffs/{league_for(season)}_{season}.html")
     except requests.HTTPError:
         raise PlayoffsPageMissing(season) from None
-    slugs = sorted(set(re.findall(rf"/playoffs/({season}-nba-[a-z0-9-]+)\.html", html)))
+    # slugs carry the league: "...-nba-finals-..." (1950+) or "...-baa-finals-..." (1947-49).
+    slugs = sorted(set(re.findall(rf"/playoffs/({season}-(?:nba|baa)-[a-z0-9-]+)\.html", html)))
     rows = []
     for s in slugs:
         round_, seq = None, None
@@ -313,7 +325,11 @@ def fetch_playoff_series(season: int) -> list[dict]:
             round_, seq = "First Round", 1
         elif "play-in" in s:
             round_, seq = "Play-In", 0
-        elif re.search(r"nba-finals", s):       # bare "...-nba-finals-..." (checked last)
+        elif "quarterfinals" in s:              # BAA (pre-1950)
+            round_, seq = "Quarterfinals", 1
+        elif "semifinals" in s:                 # BAA bare semifinals (conf/div caught above)
+            round_, seq = "Semifinals", 2
+        elif re.search(r"(?:nba|baa)-finals", s):  # bare "...-{nba,baa}-finals-..." (checked last)
             round_, seq = "Finals", 4
         conf = "Eastern" if "eastern" in s else ("Western" if "western" in s else None)
         m = re.search(r"-([a-z0-9]+)-vs-([a-z0-9-]+)$", s)
