@@ -516,15 +516,19 @@ def insert(cur, table, rows, cols=None):
 
 def insert_quarantine(cur, rows):
     """Insert rich quarantine rows; the dict `context` is serialized to VARIANT via
-    PARSE_JSON. Re-attempts are prevented upstream by the checkpoint, so a plain
-    INSERT is dup-safe — the worklist DRAINS via drain_quarantine on later success."""
+    PARSE_JSON in a SELECT ... FROM VALUES — NOT in the VALUES clause, where Snowflake
+    rejects an expression in an executemany bulk insert ("Invalid expression in VALUES").
+    Re-attempts are prevented upstream by the checkpoint, so a plain INSERT is dup-safe
+    — the worklist DRAINS via drain_quarantine on later success."""
     if not rows:
         return 0
-    ph = ",".join("PARSE_JSON(%s)" if c == "context" else "%s" for c in QUARANTINE_COLS)
+    sel = ",".join(f"PARSE_JSON(column{i})" if c == "context" else f"column{i}"
+                   for i, c in enumerate(QUARANTINE_COLS, 1))
+    ph = ",".join(["%s"] * len(QUARANTINE_COLS))
     params = [tuple(json.dumps(r.get(c)) if c == "context" and r.get(c) is not None
                     else r.get(c) for c in QUARANTINE_COLS) for r in rows]
     cur.executemany(f"INSERT INTO ZK_NBA_V2.FLAT.quarantine ({','.join(QUARANTINE_COLS)}) "
-                    f"VALUES ({ph})", params)
+                    f"SELECT {sel} FROM VALUES ({ph})", params)
     return len(rows)
 
 
