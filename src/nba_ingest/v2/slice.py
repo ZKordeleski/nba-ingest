@@ -382,9 +382,13 @@ def build_game(slug, season, series_rows, approve=False):
     visible, hidden = parse_tables_with_comments(html)
     home, away = _find_team_abbrs_from_tables(slug, visible)
     hb, ab = visible.get(f"box-{home}-game-basic"), visible.get(f"box-{away}-game-basic")
-    if hb is None or ab is None or hidden.get("line_score") is None:
-        missing = [n for n, ok in (("home_basic", hb is not None), ("away_basic", ab is not None),
-                                   ("line_score", hidden.get("line_score") is not None)) if not ok]
+    # Only the basic box tables are REQUIRED — the game's scores come from their
+    # "Team Totals" rows. The line-score table is best-effort ENRICHMENT (frequently
+    # partial or absent in early eras); its absence does not block the game — it is
+    # surfaced by the completeness guard (audit profiles line_scores + metric_coverage),
+    # not quarantined here.
+    if hb is None or ab is None:
+        missing = [n for n, ok in (("home_basic", hb is not None), ("away_basic", ab is not None)) if not ok]
         return ("quarantine", quarantine_row(slug, season, "missing_table", "parse",
                 f"missing required table(s): {', '.join(missing)}", {"missing_tables": missing}))
 
@@ -424,20 +428,25 @@ def build_game(slug, season, series_rows, approve=False):
     line = flatten_line_score(slug, hidden.get("line_score"))
     if line:
         line.pop("source", None)
-        # ANY quarters/total or total/game gap is an issue (the small-gap auto-admit
-        # was removed). `hard` flags bug-sized gaps (incomplete quarter parse, etc.).
+        # Reconcile CONTRADICTIONS only, never absence. Quarters-vs-total is checked
+        # ONLY when the regulation quarters are COMPLETE (all of Q1-Q4 present) — we
+        # never sum NULL-as-0 (early-era line scores omit quarters; that's coverage,
+        # not a discrepancy, and it's surfaced by the completeness guard / metric_coverage,
+        # not flagged here). line-total-vs-game-total is always meaningful (two sources).
         for side, gtot in (("home", game_row["home_pts"]), ("away", game_row["away_pts"])):
-            qsum = sum((line.get(f"{side}_q{q}") or 0) for q in (1, 2, 3, 4)) \
-                 + sum((line.get(f"{side}_ot{o}") or 0) for o in (1, 2, 3, 4))
+            quarters = [line.get(f"{side}_q{q}") for q in (1, 2, 3, 4)]
             ltot = line.get(f"{side}_pts")
-            diffs = [abs(qsum - ltot)] if ltot is not None and qsum != ltot else []
+            diffs = []
+            if all(q is not None for q in quarters) and ltot is not None:
+                qsum = sum(quarters) + sum((line.get(f"{side}_ot{o}") or 0) for o in (1, 2, 3, 4))
+                if qsum != ltot:
+                    diffs.append((abs(qsum - ltot), f"{side} line score: quarters={qsum} total={ltot} (complete but mismatched)"))
             if ltot is not None and gtot is not None and ltot != gtot:
-                diffs.append(abs(ltot - gtot))
+                diffs.append((abs(ltot - gtot), f"{side} line total={ltot} != game total={gtot}"))
             if diffs:
-                mag = max(diffs)
-                issues.append(_issue("line_score", "line_score_discrepancy",
-                    f"{side} line score: quarters={qsum} total={ltot} game={gtot}",
-                    magnitude=mag, hard=mag > CAVEAT_LINESCORE_MAX))
+                mag, desc = max(diffs)
+                issues.append(_issue("line_score", "line_score_discrepancy", desc,
+                                     magnitude=mag, hard=mag > CAVEAT_LINESCORE_MAX))
     # orientation: home is BR-canonically the slug's trailing code. A mismatch (box
     # tables disagree -> order-fallback guessed; BR lists away first, so a swap is
     # possible) or an empty opponent is a flag -> review, not silent admission.

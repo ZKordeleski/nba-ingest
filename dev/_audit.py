@@ -301,6 +301,31 @@ def main(check_completeness=False):
         else:
             ok("completeness", "skipped (pass --completeness; re-fetches schedule pages)")
 
+        # 13. LINE-SCORE COMPLETENESS (raise absence, don't reconcile it): a present
+        # line_scores row should have complete regulation quarters, and every game
+        # should have a line score. Incomplete/absent is EXPECTED in early eras (the
+        # metric_coverage 'line_score_quarters' ramp) — so we flag the OUTLIERS:
+        # incompleteness in a season that is otherwise >=90% complete (a NEW anomaly,
+        # e.g. a modern game missing quarters). A uniformly-sparse season is the era
+        # ramp (documented), not flagged. Data-driven boundary — no hardcoded year.
+        for s in seasons:
+            gn = q1(conn, f"SELECT COUNT(*) FROM {DB}.games WHERE season={s}")
+            if not gn:
+                continue
+            complete = q1(conn, f"""SELECT COUNT(*) FROM {DB}.games g JOIN {DB}.line_scores l USING(game_id)
+              WHERE g.season={s}
+                AND l.home_q1 IS NOT NULL AND l.home_q2 IS NOT NULL AND l.home_q3 IS NOT NULL AND l.home_q4 IS NOT NULL
+                AND l.away_q1 IS NOT NULL AND l.away_q2 IS NOT NULL AND l.away_q3 IS NOT NULL AND l.away_q4 IS NOT NULL""")
+            rate = complete / gn
+            if rate >= 0.9 and complete < gn:
+                finding("line_score_completeness", "season", s,
+                        f"{gn - complete}/{gn} games lack a complete line score in an otherwise-complete "
+                        f"season ({rate:.0%}) — anomaly (a complete-era game should have all quarters)",
+                        "warn", gn - complete)
+            else:
+                ok(f"line_score_completeness {s}",
+                   f"{rate:.0%} complete" + ("" if rate >= 0.9 else " — era ramp (metric_coverage line_score_quarters)"))
+
         persist_findings(conn)
 
     finally:
