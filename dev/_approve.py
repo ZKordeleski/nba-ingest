@@ -68,7 +68,10 @@ def main():
         n_ok = n_skip = n_cav = 0
         for gid, season, _rc, _detail in targets:
             if season not in series_cache:
-                series_cache[season] = v2.fetch_playoff_series(season)
+                try:
+                    series_cache[season] = v2.fetch_playoff_series(season)
+                except v2.PlayoffsPageMissing:
+                    series_cache[season] = []  # a human is already reviewing; no bracket this era
             try:
                 res = v2.build_game(gid, season, series_cache[season], approve=True)
             except Exception as exc:  # noqa: BLE001

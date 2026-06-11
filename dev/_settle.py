@@ -70,7 +70,12 @@ def main():
         for d in sorted(dates):
             season = season_of(d)
             if season not in series_by_season:
-                series_by_season[season] = v2.fetch_playoff_series(season)
+                try:
+                    series_by_season[season] = v2.fetch_playoff_series(season)
+                except v2.PlayoffsPageMissing:
+                    # in-progress season before playoffs start: a missing page is
+                    # EXPECTED here, not an anomaly — proceed with no bracket.
+                    series_by_season[season] = []
             slugs = [s for s in list_games_on_date(d) if s not in done]
             log.info("%s (season %d): %d new games", d, season, len(slugs))
             buckets = {t: [] for t in TABLES}

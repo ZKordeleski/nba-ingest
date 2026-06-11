@@ -278,17 +278,25 @@ def guard(game_row, basic_rows):
 
 
 # ───────────────────────────────────────────────────────────── bracket
+class PlayoffsPageMissing(Exception):
+    """BR has no /playoffs/NBA_{season}.html for this season (its playoff pages begin
+    at 1950; the BAA years 1947-49 have none). A SEASON-LEVEL anomaly — NOT something
+    to silently swallow. Callers apply policy: the historical loader BLOCKS the season
+    for human review (never admit an anomalous season unreviewed); daily settle treats
+    it as expected for an in-progress season whose playoffs haven't started."""
+    def __init__(self, season):
+        super().__init__(f"no playoffs page for season {season}")
+        self.season = season
+
+
 def fetch_playoff_series(season: int) -> list[dict]:
-    # Optional enrichment: a missing playoffs page must NOT kill the season. BR's
-    # /playoffs/NBA_{year}.html starts at 1950 — the earliest BAA years (1947-49)
-    # 404 here. Fail-soft like enumerate_season_by_schedule: return no bracket, let
-    # the season load; games still get their round from the <h1>, only series-slug
-    # linkage is unavailable for those years. (_fetch_retry also adds transient retry.)
+    # A missing playoffs page is raised, not swallowed: the SYSTEM must never decide
+    # on its own that an anomalous season is fine to admit. _fetch_retry adds transient
+    # retry; a real 404 -> PlayoffsPageMissing for the caller to adjudicate.
     try:
         html = _fetch_retry(f"{BASE_URL}/playoffs/NBA_{season}.html")
     except requests.HTTPError:
-        log.warning("no playoffs page for %d (404) — loading season without a bracket", season)
-        return []
+        raise PlayoffsPageMissing(season) from None
     slugs = sorted(set(re.findall(rf"/playoffs/({season}-nba-[a-z0-9-]+)\.html", html)))
     rows = []
     for s in slugs:
@@ -511,3 +519,22 @@ def drain_quarantine(cur, game_ids):
     qs = ",".join(["%s"] * len(game_ids))
     cur.execute(f"DELETE FROM ZK_NBA_V2.FLAT.quarantine WHERE game_id IN ({qs})",
                 tuple(game_ids))
+
+
+def record_finding(cur, detector, scope, subject_id, detail, severity="warn", metric_value=None):
+    """MERGE a single pending-judgment row into audit_findings — the review inbox for
+    anomalies a human must adjudicate (e.g. a season missing its playoffs page) before
+    the data is admitted. The audit and the loaders share this surface; finding_key
+    (detector:subject) dedupes across runs."""
+    key = f"{detector}:{subject_id}"
+    cur.execute(
+        f"""MERGE INTO ZK_NBA_V2.FLAT.audit_findings t
+            USING (SELECT %s AS k) s ON t.finding_key = s.k
+            WHEN MATCHED THEN UPDATE SET last_seen_at=CURRENT_TIMESTAMP(), detail=%s,
+                metric_value=%s, severity=%s
+            WHEN NOT MATCHED THEN INSERT
+                (finding_key, detector, scope, subject_id, severity, detail, metric_value,
+                 first_seen_at, last_seen_at, status)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,CURRENT_TIMESTAMP(),CURRENT_TIMESTAMP(),'open')""",
+        (key, detail, metric_value, severity,
+         key, detector, scope, str(subject_id), severity, detail, metric_value))

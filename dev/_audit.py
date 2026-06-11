@@ -222,7 +222,8 @@ def main(check_completeness=False):
 
         # 8. ORIENTATION backstop: home is BR-canonically the slug's trailing code.
         # A mismatch = the order-fallback fired (possible home/away swap) OR a benign
-        # slug/abbr divergence. Flag for judgment; the allowlist is learned empirically.
+        # slug/abbr divergence. Always flag for judgment; each is reviewed individually.
+        # We do NOT auto-learn an allowlist — guards don't auto-loosen.
         n_mism = q1(conn, f"SELECT COUNT(*) FROM {DB}.games WHERE home_team_abbr <> RIGHT(game_id,3)")
         if n_mism:
             sample = [r[0] for r in execute(conn,

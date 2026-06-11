@@ -50,6 +50,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--season", type=int, required=True, help="NBA season end-year (1973 = 1972-73)")
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--approve-no-playoffs", action="store_true",
+                    help="human-reviewed override: load a season that has no BR playoffs page "
+                         "(e.g. BAA 1947-49). Without this, such a season is BLOCKED for review.")
     args = ap.parse_args()
     season = args.season
 
@@ -65,7 +68,27 @@ def main():
         cur.close()
         log.info("season %d checkpoint: %d games already processed", season, len(done))
 
-        series = v2.fetch_playoff_series(season)
+        # A missing playoffs page is a season-level ANOMALY. We never silently admit
+        # an anomalous season: block it and flag it for human review. Re-running with
+        # --approve-no-playoffs is the per-instance, human-in-the-loop approval — it
+        # does NOT loosen the guard for any other season (guards don't auto-loosen).
+        try:
+            series = v2.fetch_playoff_series(season)
+        except v2.PlayoffsPageMissing:
+            if not args.approve_no_playoffs:
+                cur = conn.cursor()
+                v2.record_finding(cur, "missing_playoffs_page", "season", season,
+                    f"season {season} has no /playoffs/NBA_{season}.html (BR's playoff pages "
+                    f"begin at 1950; BAA 1947-49 have none). REVIEW before admitting the season; "
+                    f"re-run dev/_load_season.py --season {season} --approve-no-playoffs once confirmed.",
+                    severity="warn")
+                conn.commit(); cur.close()
+                log.error("BLOCKED season %d: missing playoffs page — flagged for review in "
+                          "audit_findings. Nothing loaded. Re-run with --approve-no-playoffs "
+                          "after review.", season)
+                return 2  # distinct from a transient failure: needs human review, not a retry
+            series = []
+            log.warning("APPROVED (--approve-no-playoffs): loading season %d without a bracket", season)
         if series:
             cur = conn.cursor()
             cur.execute("DELETE FROM ZK_NBA_V2.FLAT.playoff_series WHERE season=%s", (season,))
