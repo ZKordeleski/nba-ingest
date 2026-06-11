@@ -476,7 +476,8 @@ SERIES_COLS = ["series_slug", "season", "round", "round_seq", "conference", "tea
                "team_b_abbr", "winner_abbr", "games_played", "fetched_at"]
 OFFICIALS_COLS = ["game_id", "official_id", "official_name", "fetched_at"]
 INACTIVES_COLS = ["game_id", "player_id", "player_name", "team_abbr", "fetched_at"]
-CAVEAT_COLS = ["game_id", "player_id", "caveat_type", "detail", "magnitude", "fetched_at"]
+CAVEAT_COLS = ["game_id", "player_id", "caveat_type", "detail", "magnitude", "fetched_at",
+               "reviewed_by", "reviewed_at", "review_note"]
 FINDING_COLS = ["finding_key", "detector", "scope", "subject_id", "severity", "detail",
                 "metric_value", "first_seen_at", "last_seen_at", "status", "note"]
 QUARANTINE_COLS = ["game_id", "season", "game_date", "home_team_abbr", "away_team_abbr",
@@ -521,20 +522,22 @@ def drain_quarantine(cur, game_ids):
                 tuple(game_ids))
 
 
-def record_finding(cur, detector, scope, subject_id, detail, severity="warn", metric_value=None):
+def record_finding(cur, detector, scope, subject_id, detail, severity="warn",
+                   metric_value=None, status="open", note=None):
     """MERGE a single pending-judgment row into audit_findings — the review inbox for
     anomalies a human must adjudicate (e.g. a season missing its playoffs page) before
     the data is admitted. The audit and the loaders share this surface; finding_key
-    (detector:subject) dedupes across runs."""
+    (detector:subject) dedupes across runs. Pass status='approved' + note to record a
+    human adjudication (e.g. a reviewed --approve-no-playoffs season admission)."""
     key = f"{detector}:{subject_id}"
     cur.execute(
         f"""MERGE INTO ZK_NBA_V2.FLAT.audit_findings t
             USING (SELECT %s AS k) s ON t.finding_key = s.k
             WHEN MATCHED THEN UPDATE SET last_seen_at=CURRENT_TIMESTAMP(), detail=%s,
-                metric_value=%s, severity=%s
+                metric_value=%s, severity=%s, status=%s, note=COALESCE(%s, t.note)
             WHEN NOT MATCHED THEN INSERT
                 (finding_key, detector, scope, subject_id, severity, detail, metric_value,
-                 first_seen_at, last_seen_at, status)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,CURRENT_TIMESTAMP(),CURRENT_TIMESTAMP(),'open')""",
-        (key, detail, metric_value, severity,
-         key, detector, scope, str(subject_id), severity, detail, metric_value))
+                 first_seen_at, last_seen_at, status, note)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,CURRENT_TIMESTAMP(),CURRENT_TIMESTAMP(),%s,%s)""",
+        (key, detail, metric_value, severity, status, note,
+         key, detector, scope, str(subject_id), severity, detail, metric_value, status, note))

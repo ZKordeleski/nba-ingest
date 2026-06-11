@@ -53,7 +53,11 @@ def main():
     ap.add_argument("--approve-no-playoffs", action="store_true",
                     help="human-reviewed override: load a season that has no BR playoffs page "
                          "(e.g. BAA 1947-49). Without this, such a season is BLOCKED for review.")
+    ap.add_argument("--reviewer", help="who is approving (required with --approve-no-playoffs)")
+    ap.add_argument("--note", help="why it's admitted without a bracket (required with --approve-no-playoffs)")
     args = ap.parse_args()
+    if args.approve_no_playoffs and not (args.reviewer and args.note):
+        ap.error("--approve-no-playoffs requires --reviewer and --note (the approval must be traceable)")
     season = args.season
 
     conn = connect()
@@ -88,7 +92,13 @@ def main():
                           "after review.", season)
                 return 2  # distinct from a transient failure: needs human review, not a retry
             series = []
-            log.warning("APPROVED (--approve-no-playoffs): loading season %d without a bracket", season)
+            cur = conn.cursor()
+            v2.record_finding(cur, "missing_playoffs_page", "season", season,
+                f"season {season}: no BR playoffs page — admitted without a bracket after human review.",
+                severity="info", status="approved", note=f"{args.reviewer}: {args.note}")
+            conn.commit(); cur.close()
+            log.warning("APPROVED by %s: loading season %d without a bracket — %s",
+                        args.reviewer, season, args.note)
         if series:
             cur = conn.cursor()
             cur.execute("DELETE FROM ZK_NBA_V2.FLAT.playoff_series WHERE season=%s", (season,))

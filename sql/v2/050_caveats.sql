@@ -23,18 +23,24 @@ CREATE TABLE IF NOT EXISTS data_caveats (
     caveat_type  STRING  NOT NULL COMMENT 'reconciliation_discrepancy | player_id_collision | ... (extensible).',
     detail       STRING           COMMENT 'Human-readable explanation, incl. which side disagrees.',
     magnitude    INT              COMMENT 'Size of the discrepancy in the caveat''s natural unit (e.g. |player_pts_sum - team_total|). NULL if N/A.',
-    fetched_at   TIMESTAMP_NTZ
+    fetched_at   TIMESTAMP_NTZ,
+    -- approval provenance: a caveat exists ONLY because a human reviewed the flagged
+    -- game and admitted it. The imperfection and its accountability are one row.
+    reviewed_by  STRING           COMMENT 'Who approved admitting this flagged game (dev/_approve.py --reviewer). App-enforced non-null going forward.',
+    reviewed_at  TIMESTAMP_NTZ    COMMENT 'When the human approved it.',
+    review_note  STRING           COMMENT 'Why it was admitted despite the flag (the reviewer''s rationale).'
 )
-COMMENT = 'Known, consciously-admitted data imperfections — one row per (game, caveat). The game IS loaded; this records why it is imperfect so consumers can annotate/exclude and future cleanup is easy. Bug-sized problems are quarantined, not caveated.';
+COMMENT = 'Human-approved data imperfections — one row per (game, caveat). A caveat is written ONLY when a human reviews a quarantined game and approves it (dev/_approve.py); reviewed_by/at/note carry the accountability. Bug-sized problems a reviewer rejects stay quarantined.';
 
 USE SCHEMA DERIVED;
 CREATE OR REPLACE VIEW vw_data_caveats
-COMMENT = 'Data caveats joined to game context (date, teams) — the agent/analyst-facing surface for "what is imperfect and why". Filter or annotate on this; e.g. exclude reconciliation_discrepancy games from exact-points leaderboards.'
+COMMENT = 'Approved data caveats + provenance, joined to game context — the agent/analyst surface for "what is imperfect, why, and who approved it". The single source; build any "interesting findings" slice as another view over data_caveats, never a copy.'
 AS
 SELECT c.caveat_type, c.magnitude, c.detail, c.game_id, c.player_id,
        g.season, g.game_date, g.season_type, g.round,
        g.away_team_abbr || ' @ ' || g.home_team_abbr AS matchup,
-       g.away_pts || '-' || g.home_pts AS score
+       g.away_pts || '-' || g.home_pts AS score,
+       c.reviewed_by, c.reviewed_at, c.review_note
 FROM ZK_NBA_V2.FLAT.data_caveats c
 LEFT JOIN ZK_NBA_V2.FLAT.games g USING (game_id);
 -- Root cause of caveat_type='reconciliation_discrepancy' is documented (with

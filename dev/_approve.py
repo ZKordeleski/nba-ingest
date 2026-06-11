@@ -5,14 +5,15 @@ The strict guardrail (slice.build_game) quarantines ANY flagged game; it never
 admits-on-caveat. A human reviews the quarantine worklist and approves the games
 that are real-but-imperfect. This tool re-admits each approved game via
 build_game(approve=True), which admits it AND records its flagged issues as typed
-data_caveats rows — then drains the quarantine entry. A caveat therefore always
-means "a human approved this game knowing it carries this imperfection."
+data_caveats rows stamped with the approval provenance (reviewed_by/at/note) — then
+drains the quarantine entry. A caveat therefore always means "a human (named) approved
+this game on this date knowing it carries this imperfection, for this reason."
 
-Selection (combine as needed); preview by default, --apply to execute:
-    dev/_approve.py --game 195003160DNN                 # one game
-    dev/_approve.py --reason-class data_discrepancy     # all soft discrepancies (bulk)
-    dev/_approve.py --all                               # every open quarantine (careful)
-    dev/_approve.py --reason-class data_discrepancy --apply
+FRICTION BY DESIGN: every game must be named explicitly (no bulk sweep), and a
+reviewer + written rationale are mandatory. Approving one game never loosens the
+guard for any other. Preview by default; --apply to execute:
+    dev/_approve.py --game 195003160DNN --reviewer zack --note "BAA quarter cells partial; final score correct per BR"
+    dev/_approve.py --game A --game B --reviewer zack --note "<rationale>" --apply
 """
 
 from __future__ import annotations
@@ -34,29 +35,29 @@ TABLES = ["games", "player_box_basic", "player_box_advanced", "line_scores",
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--game", action="append", default=[], help="game_id to approve (repeatable)")
-    ap.add_argument("--reason-class", help="approve all open quarantines of this reason_class")
-    ap.add_argument("--all", action="store_true", help="approve ALL open quarantines")
+    # FRICTION BY DESIGN: each game must be named explicitly (no --all / --reason-class
+    # sweep), and a reviewer + written rationale are mandatory. Approving one game
+    # never loosens the guard for any other — guards don't auto-loosen.
+    ap.add_argument("--game", action="append", default=[], required=True,
+                    help="game_id to approve (repeatable; you must name each one — no bulk)")
+    ap.add_argument("--reviewer", required=True, help="who is approving (recorded as provenance)")
+    ap.add_argument("--note", required=True, help="why this flagged game is admitted (the rationale)")
     ap.add_argument("--apply", action="store_true", help="execute (default: preview only)")
     args = ap.parse_args()
 
     conn = connect()
     try:
         cur = conn.cursor()
-        where = ["status='open'"]
-        params = []
-        if args.game:
-            where.append(f"game_id IN ({','.join(['%s']*len(args.game))})"); params += args.game
-        if args.reason_class:
-            where.append("reason_class=%s"); params.append(args.reason_class)
-        if not (args.game or args.reason_class or args.all):
-            ap.error("select games: --game ID, --reason-class CLASS, or --all")
+        ph = ",".join(["%s"] * len(args.game))
         cur.execute(f"SELECT game_id, season, reason_class, detail FROM ZK_NBA_V2.FLAT.quarantine "
-                    f"WHERE {' AND '.join(where)} ORDER BY game_id", tuple(params))
+                    f"WHERE status='open' AND game_id IN ({ph}) ORDER BY game_id", tuple(args.game))
         targets = cur.fetchall()
         cur.close()
         if not targets:
-            print("No matching open quarantines."); return 0
+            print("No matching open quarantines for the named game(s)."); return 0
+        missing = set(args.game) - {r[0] for r in targets}
+        if missing:
+            print(f"  (note: not open in quarantine, skipping: {sorted(missing)})")
 
         print(f"{len(targets)} game(s) to approve (re-admit + caveat):")
         for gid, season, rc, detail in targets:
@@ -78,6 +79,13 @@ def main():
                 print(f"  SKIP {gid}: rebuild error {exc!r}"); n_skip += 1; continue
             if isinstance(res, tuple):  # structural failure (no data) — cannot approve
                 print(f"  SKIP {gid}: still unbuildable ({res[1]['detail']})"); n_skip += 1; continue
+            # stamp every caveat with the approval provenance — the imperfection and
+            # the human accountability for admitting it are one row.
+            now = v2._now_utc()
+            for c in res["data_caveats"]:
+                c["reviewed_by"] = args.reviewer
+                c["reviewed_at"] = now
+                c["review_note"] = args.note
             cur = conn.cursor()
             for t in TABLES:
                 v2.insert(cur, t, res[t])
