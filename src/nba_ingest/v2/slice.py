@@ -32,9 +32,14 @@ from nba_ingest.fetchers.schedule import SEASON_MONTHS
 log = logging.getLogger(__name__)
 
 
-def _fetch_retry(url: str, tries: int = 3) -> str:
-    """fetch() with retry on transient connection errors (Phase 2 surfaced one
-    ConnectionReset over ~1300 games). Distinct from a permanent 404/parse fail."""
+_TRANSIENT_HTTP = {500, 502, 503, 504}  # server-side, retryable (vs 404/4xx = permanent)
+
+
+def _fetch_retry(url: str, tries: int = 4) -> str:
+    """fetch() with retry on TRANSIENT failures — connection errors (Phase 2 surfaced a
+    ConnectionReset) and server-side HTTP 5xx (a Dec-1973 504 burst quarantined 99 valid
+    games before this). A 404/4xx is permanent and re-raises immediately so callers can
+    treat it as "page doesn't exist" (enumerate/playoffs skip on 404)."""
     for i in range(tries):
         try:
             return fetch(url)
@@ -42,6 +47,11 @@ def _fetch_retry(url: str, tries: int = 3) -> str:
             if i == tries - 1:
                 raise
             time.sleep(8)
+        except requests.HTTPError as exc:
+            code = exc.response.status_code if exc.response is not None else None
+            if code not in _TRANSIENT_HTTP or i == tries - 1:
+                raise
+            time.sleep(8 * (i + 1))  # backoff for a transient server error
     raise RuntimeError("unreachable")
 
 

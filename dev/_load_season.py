@@ -63,11 +63,15 @@ def main():
     conn = connect()
     try:
         cur = conn.cursor()
-        # quarantine table is the rich game-grain worklist (sql/v2/060_quarantine.sql,
-        # applied at the post-backfill gate); no ad-hoc CREATE here.
+        # fetch_error quarantines are TRANSIENT (e.g. a 504 burst), not a data judgment —
+        # clear this season's so they are re-attempted, not held in the review bucket.
+        cur.execute("DELETE FROM ZK_NBA_V2.FLAT.quarantine WHERE season=%s AND reason_class='fetch_error'", (season,))
+        conn.commit()
         cur.execute("SELECT game_id FROM ZK_NBA_V2.FLAT.games WHERE season=%s", (season,))
         done = {r[0] for r in cur.fetchall()}
-        cur.execute("SELECT game_id FROM ZK_NBA_V2.FLAT.quarantine")
+        # data quarantines (held for review) stay in the checkpoint; fetch_errors were
+        # just cleared, so they fall through to a fresh attempt.
+        cur.execute("SELECT game_id FROM ZK_NBA_V2.FLAT.quarantine WHERE reason_class <> 'fetch_error' OR reason_class IS NULL")
         done |= {r[0] for r in cur.fetchall()}
         cur.close()
         log.info("season %d checkpoint: %d games already processed", season, len(done))
