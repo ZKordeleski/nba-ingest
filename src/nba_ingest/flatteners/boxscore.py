@@ -278,9 +278,19 @@ def flatten_line_score(game_slug: str, df: pd.DataFrame) -> Optional[dict]:
     df = _flatten_columns(df.copy())
     game_date = f"{game_slug[:4]}-{game_slug[4:6]}-{game_slug[6:8]}"
 
-    # Row 0 = away team, row 1 = home team (BR convention: visitor listed first).
-    away_row = df.iloc[0]
-    home_row = df.iloc[1]
+    # Match rows to home/away by TEAM ABBR (the slug's trailing code is the home
+    # team), NOT by row position. BR usually lists the visitor first, but not always
+    # (some early box scores list home first) — assuming position silently swaps
+    # home/away for those games. Fall back to the away-first convention only if
+    # neither row's abbr matches the slug home (abbr divergence).
+    home_abbr = game_slug[-3:]
+    r0, r1 = df.iloc[0], df.iloc[1]
+    if str(r1.iloc[0]).strip() == home_abbr:
+        away_row, home_row = r0, r1
+    elif str(r0.iloc[0]).strip() == home_abbr:
+        away_row, home_row = r1, r0
+    else:
+        away_row, home_row = r0, r1  # neither matches -> BR away-first convention
 
     def period_pts(row, col_name: str) -> Optional[int]:
         return _safe_int(row.get(col_name))
