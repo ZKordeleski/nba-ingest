@@ -257,6 +257,42 @@ Sources:
 - Sports-Reference — "Several Dozen Newly Discovered Unofficial Totals Added" (2026-03): https://www.sports-reference.com/blog/2026/03/several-dozen-newly-discovered-unofficial-totals-added-to-basketball-reference/
 - Sports-Reference — "Box Score For Every Game in NBA History" (2012): https://www.sports-reference.com/blog/2012/01/box-score-for-every-game-in-nba-history/
 
+### Line-score discrepancies + adjudication methodology (BAA era) — 2026-06-11
+
+BAA-era line scores (`/boxscores/{slug}.html` hidden `line_score` table) are
+frequently **incomplete** (early quarters blank, total correct) or **absent**, and a
+minority are **internally inconsistent** (all four quarters present but not summing to
+the — corroborated — total). Provenance: BR's BAA box scores were assembled from
+**local newspapers + microfilm** by a collector (Dick Pfander) and hand-curated over
+decades, not from official league line scores ([Grantland](https://grantland.com/the-triangle/how-basketball-reference-got-every-box-score/)).
+Quarter transcription imperfections are therefore *plausible*, but the specific cause
+of any single game's discrepancy is generally **not independently confirmable** — so
+caveats state the **observation**, never an assumed cause.
+
+**Adjudication methodology (reusable — applied to the 11 quarantined 1947–49 games):**
+1. **Corroborate the final two ways** — does the line-score `T` equal the summed box
+   "Team Totals"? If yes (true for all 11), the game *outcome* is valid; only the
+   quarter breakdown is in question.
+2. **Rule out overtime with the minutes test** — team `MP` total = **240** ⇒ regulation
+   (5×48); **>240** ⇒ overtime (e.g. 265 = 1 OT), which *explains* a quarters-short-of-total
+   gap as uncaptured OT. This is the conclusive OT discriminator; BR's scorebox carries
+   no reliable OT marker for this era, and a `\bOT\b` text search hits CSS noise — do
+   **not** infer OT from the deficit size.
+3. **Check for the parser swap** — `flatten_line_score` historically assigned home/away
+   by row position; if the line rows are internally consistent but "disagree" with the
+   game total, suspect a home/away swap (fixed 2026-06-11: match by team abbr).
+
+**Outcomes (the 11):** 1 parser swap (`194802190BOS`, loads clean post-fix); 1 verified
+OT (`194802280PRO`, MP=265, off by 1); 9 regulation games admitted with observation-only
+`line_score_discrepancy` caveats (totals corroborated two ways; quarters off; cause
+undetermined; refs in `review_note`). None held — every outcome was corroborated.
+
+### `metric_coverage` ramp — `line_score_quarters`
+Quarter completeness is a `recording_ramp` (incomplete early eras, ~full modern):
+1947=74%, 1948=85%, 1949=97% complete. The audit's `line_score_completeness` detector
+flags incompleteness only in a season that is otherwise ≥90% complete (a real anomaly),
+treating a uniformly-sparse season as the documented ramp.
+
 ---
 
 ## 3. Cross-page navigation map
