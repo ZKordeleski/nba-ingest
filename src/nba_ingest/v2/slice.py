@@ -293,7 +293,7 @@ def guard(game_row, basic_rows):
     for pid, n in seen.items():
         if n > 1:
             issues.append(_issue("collision", "player_id_collision",
-                f"{n} rows share player_id {pid} (same-name players; needs per-row slug resolution)",
+                f"{n} distinct rows share resolved player_id {pid} (per-row slug resolution needed)",
                 magnitude=n, hard=n > CAVEAT_COLLISION_MAX, player_id=pid))
     return issues
 
