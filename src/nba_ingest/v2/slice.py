@@ -43,7 +43,8 @@ def _fetch_retry(url: str, tries: int = 4) -> str:
     for i in range(tries):
         try:
             return fetch(url)
-        except requests.exceptions.ConnectionError:
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+            # ConnectionError + Timeout (ReadTimeout/ConnectTimeout) are all transient
             if i == tries - 1:
                 raise
             time.sleep(8)
