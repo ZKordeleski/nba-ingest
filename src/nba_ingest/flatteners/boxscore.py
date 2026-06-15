@@ -295,6 +295,15 @@ def flatten_line_score(game_slug: str, df: pd.DataFrame) -> Optional[dict]:
     def period_pts(row, col_name: str) -> Optional[int]:
         return _safe_int(row.get(col_name))
 
+    def first_period(row, *names: str) -> Optional[int]:
+        # First present column among `names` — treats a legit 0 as a value, NOT as
+        # falsy (the old `A or B` dropped a 0-point OT to NULL, violating NULL!=0).
+        for n in names:
+            v = period_pts(row, n)
+            if v is not None:
+                return v
+        return None
+
     return {
         "game_id": game_slug,
         "game_date": game_date,
@@ -303,20 +312,24 @@ def flatten_line_score(game_slug: str, df: pd.DataFrame) -> Optional[dict]:
         "home_q2": period_pts(home_row, "2"),
         "home_q3": period_pts(home_row, "3"),
         "home_q4": period_pts(home_row, "4"),
-        "home_ot1": period_pts(home_row, "OT") or period_pts(home_row, "5"),
-        "home_ot2": period_pts(home_row, "2OT") or period_pts(home_row, "6"),
-        "home_ot3": period_pts(home_row, "3OT") or period_pts(home_row, "7"),
-        "home_ot4": period_pts(home_row, "4OT") or period_pts(home_row, "8"),
+        "home_ot1": first_period(home_row, "OT", "5"),
+        "home_ot2": first_period(home_row, "2OT", "6"),
+        "home_ot3": first_period(home_row, "3OT", "7"),
+        "home_ot4": first_period(home_row, "4OT", "8"),
+        "home_ot5": first_period(home_row, "5OT"),   # 5 OT = 1989 Bucks-Sonics
+        "home_ot6": first_period(home_row, "6OT"),   # 6 OT = 1951 INO-ROC (NBA all-time max)
         "home_pts": period_pts(home_row, "T"),
         "away_team_abbr": str(away_row.iloc[0]).strip(),
         "away_q1": period_pts(away_row, "1"),
         "away_q2": period_pts(away_row, "2"),
         "away_q3": period_pts(away_row, "3"),
         "away_q4": period_pts(away_row, "4"),
-        "away_ot1": period_pts(away_row, "OT") or period_pts(away_row, "5"),
-        "away_ot2": period_pts(away_row, "2OT") or period_pts(away_row, "6"),
-        "away_ot3": period_pts(away_row, "3OT") or period_pts(away_row, "7"),
-        "away_ot4": period_pts(away_row, "4OT") or period_pts(away_row, "8"),
+        "away_ot1": first_period(away_row, "OT", "5"),
+        "away_ot2": first_period(away_row, "2OT", "6"),
+        "away_ot3": first_period(away_row, "3OT", "7"),
+        "away_ot4": first_period(away_row, "4OT", "8"),
+        "away_ot5": first_period(away_row, "5OT"),
+        "away_ot6": first_period(away_row, "6OT"),
         "away_pts": period_pts(away_row, "T"),
         "source": "br_scrape",
         "fetched_at": _now_utc(),

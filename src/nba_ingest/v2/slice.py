@@ -449,7 +449,7 @@ def build_game(slug, season, series_rows, approve=False):
             ltot = line.get(f"{side}_pts")
             diffs = []
             if all(q is not None for q in quarters) and ltot is not None:
-                qsum = sum(quarters) + sum((line.get(f"{side}_ot{o}") or 0) for o in (1, 2, 3, 4))
+                qsum = sum(quarters) + sum((line.get(f"{side}_ot{o}") or 0) for o in (1, 2, 3, 4, 5, 6))
                 if qsum != ltot:
                     diffs.append((abs(qsum - ltot), f"{side} line score: quarters={qsum} total={ltot} (complete but mismatched)"))
             if ltot is not None and gtot is not None and ltot != gtot:
@@ -505,9 +505,9 @@ ADV_COLS = ["game_id", "player_id", "ts_pct", "efg_pct", "fg3a_rate", "fta_rate"
             "drb_pct", "trb_pct", "ast_pct", "stl_pct", "blk_pct", "tov_pct", "usg_pct",
             "ortg", "drtg", "bpm", "fetched_at"]
 LINE_COLS = ["game_id", "game_date", "home_team_abbr", "home_q1", "home_q2", "home_q3",
-             "home_q4", "home_ot1", "home_ot2", "home_ot3", "home_ot4", "home_pts",
+             "home_q4", "home_ot1", "home_ot2", "home_ot3", "home_ot4", "home_ot5", "home_ot6", "home_pts",
              "away_team_abbr", "away_q1", "away_q2", "away_q3", "away_q4", "away_ot1",
-             "away_ot2", "away_ot3", "away_ot4", "away_pts", "fetched_at"]
+             "away_ot2", "away_ot3", "away_ot4", "away_ot5", "away_ot6", "away_pts", "fetched_at"]
 SERIES_COLS = ["series_slug", "season", "round", "round_seq", "conference", "team_a_abbr",
                "team_b_abbr", "winner_abbr", "games_played", "fetched_at"]
 OFFICIALS_COLS = ["game_id", "official_id", "official_name", "fetched_at"]
