@@ -64,16 +64,38 @@ def league_for(season: int) -> str:
     return "BAA" if season <= 1949 else "NBA"
 
 
+def _season_month_pages(league: str, season: int) -> list[str]:
+    """The month-filter page slugs BR actually lists on a season's schedule index.
+
+    Reading the months from the index — rather than walking a hardcoded Oct-June
+    list — is what makes enumeration honest about off-window schedules: the 2020
+    Orlando bubble's july/august/september pages and its disambiguated
+    october-2019 / october-2020 split only appear because BR lists them here. A
+    plain "-october" fetch returns just the 2019 games, so a fixed month list
+    silently drops the entire 2020 bubble + playoffs (~170 games).
+
+    Falls back to the static SEASON_MONTHS if the index is unreachable, so a bad
+    fetch degrades to the old behavior instead of enumerating nothing.
+    """
+    try:
+        html = _fetch_retry(f"{BASE_URL}/leagues/{league}_{season}_games.html")
+    except requests.HTTPError:
+        return list(SEASON_MONTHS)
+    months = sorted(set(re.findall(rf"{league}_{season}_games-([a-z0-9-]+)\.html", html)))
+    return months or list(SEASON_MONTHS)
+
+
 def enumerate_season_by_schedule(season: int) -> list[str]:
     """All game slugs for a season via the league monthly schedule pages.
 
-    Works for any era (defunct franchises, BAA included) and is ~9 fetches/season —
-    unlike team-page enumeration, which needs current abbrs and misses the NBA
-    Cup final (Phase 2 parity delta). Skips months whose page doesn't exist.
+    Works for any era (defunct franchises, BAA included). The months come from the
+    season's schedule index (see _season_month_pages), so off-window schedules like
+    the 2020 bubble are captured rather than assumed away. Skips months whose page
+    doesn't exist.
     """
     league = league_for(season)
     seen, out = set(), []
-    for month in SEASON_MONTHS:
+    for month in _season_month_pages(league, season):
         try:
             html = _fetch_retry(f"{BASE_URL}/leagues/{league}_{season}_games-{month}.html")
         except requests.HTTPError:
