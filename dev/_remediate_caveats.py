@@ -1,12 +1,18 @@
 """Gate remediation — re-quarantine EVERY game currently admitted-on-caveat.
 
-⚠️⚠️ ONE-TIME MIGRATION ARTIFACT — DELETE THIS FILE once it has run successfully at
-the gate and the old backlog is drained. It exists only to clean up games that the
-*old* auto-admit-on-caveat code let in; the strict guardrail (slice.build_game)
-means no new such games are ever created, so after the one-time sweep this script is
-dead weight. (Its durable counterpart, dev/_approve.py, stays — that's the permanent
-human-approval path.) `git rm dev/_remediate_caveats.py` is a gate step in
-REBUILD_PLAN.
+TELOS (kept, not deleted): this is the **all-or-nothing reset** — it re-quarantines
+*every* caveated game (no filter) so the entire caveat set is re-adjudicated from
+scratch through dev/_approve.py. Use it ONLY when you want a clean-slate re-gate:
+a from-zero rebuild, or a loss of confidence in the whole caveat ledger.
+
+It is NOT the tool for a mixed state where some caveats are already properly signed —
+running it then would WIPE good provenance and force re-approving work already done.
+For backfilling provenance onto only the unsigned legacy caveats while preserving the
+signed ones, use the surgical dev/_remediate_provenance.py instead (that is what ran
+at the 2026-06-17 gate; this script was deliberately NOT used there).
+
+(Durable counterpart for one-off approvals: dev/_approve.py — the permanent
+human-approval path.)
 
 Before the strict-guardrail fix, build_game auto-admitted flagged games with a
 data_caveats row. Zack's call: those games subverted the guardrail and must go

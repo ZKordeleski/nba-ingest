@@ -535,7 +535,9 @@ Three tables, **not one** (unification would be the overengineering we keep guar
 6. **`git rm dev/_remediate_caveats.py`** — one-time migration artifact; delete it once the backlog is drained (the strict guardrail means no new admitted-on-caveat games exist, so it's dead weight). `dev/_approve.py` stays (durable).
 7. (loader swap is already on `main`; the next chunk picks up `insert_quarantine` + drain automatically.)
 
-> **Durable vs one-time tooling:** `_approve.py` = permanent (the human-approval path). `_remediate_caveats.py` = one-time (clean up the old auto-admit backlog, then delete). General principle — migration/remediation scripts clean up *behind* us as we go; they don't accrete in `dev/`.
+> **What actually happened (2026-06-17 gate):** because the strict guardrail landed *early*, by the post-backfill gate the caveats were a **mixed** set — most already properly signed, only 42 legacy ones unsigned. The all-or-nothing `_remediate_caveats.py` (steps 3–4) was therefore **deliberately not run** (it would have wiped good provenance); instead the surgical **`dev/_remediate_provenance.py`** backfilled provenance onto only the unsigned 42 (commit `bbccaa2`), preserving the signed ones. And `_remediate_caveats.py` was **kept, not `git rm`'d** (step 6 superseded): it's retained as the clean-slate reset tool for a future from-zero re-gate, with its telos documented in its docstring.
+
+> **Durable vs one-time tooling (revised):** `_approve.py` = permanent (the human-approval path). `_remediate_provenance.py` = the surgical mixed-state provenance backfill (what ran). `_remediate_caveats.py` = the all-or-nothing reset — kept for a future clean-slate re-gate, not deleted. The earlier "remediation scripts always clean up behind us" principle yields here to a more useful one: keep a reset tool with a *clear telos* over deleting capability that may be needed again.
 
 > ✋ **Gate: each piece validates against the 1947–59 chunk as it lands (test-as-we-go).**
 
@@ -561,6 +563,26 @@ Tasks:
 
 ---
 
+## Phase 4 Reflection — 2026-06-17
+
+### Run the test
+Full history loaded: **all 79 seasons, 1947–2025, 71,852 games**, every season present, **0 games left in quarantine**, 0 pending audit findings. Backfilled in 3-season GHA chunks for the modern eras (the 5h50m cap lets ~1 high-volume season through per run; the per-season checkpoint makes over-running free). Each chunk gated individually before the next fired: count-vs-known-schedule, line-score completeness, and per-game adjudication of every quarantine.
+
+### Finding 1 — the coverage gate caught what NO internal check could (the headline)
+The hardcoded `SEASON_MONTHS` window (Oct–June) silently dropped every game played outside it. Two COVID-distorted seasons were affected: **2020** lost the entire Orlando bubble (Jul–Oct, 172 games incl. all playoffs — and the dual `october-2019`/`october-2020` pages a fixed month list can't even name), and **2021** lost the pandemic-shifted July Finals (8 games). Every one of 2020's 971 pre-suspension games was *internally* perfect (complete line scores, clean guards) — only checking the **total against the known schedule shape** exposed the absence. Fix: `_season_month_pages()` reads each season's real month list from its schedule index (commit `a586832`), with a static fallback. An all-79-season audit confirmed exactly 2 seasons affected; both re-loaded to evidenced-complete totals (1143, 1171) that reconcile against known structure (88 seeding games, 15 playoff series each), validated independently of BR. **Lesson: "every record valid" and "every record present" are different guarantees; a coverage gap hides entirely inside the first. Any fixed-window assumption about an external source is a latent bug — read the source's own index instead.**
+
+### Finding 2 — per-game evidence beat every shortcut
+Every quarantine was adjudicated individually, never in bulk. Player-id collisions (two Chris Johnsons 2013; two George Johnsons 1973) were confirmed distinct by evidence (opposing teams / distinct BR slugs + birthdates), corroborated independently where possible. The 5-OT/6-OT games forced an `ot5/ot6` schema bump and surfaced an `or`-fallback that dropped 0-point OTs to NULL — both fixed mid-backfill (commit `e6b79da`).
+
+### Favors for future-us
+- Schedule enumeration is now self-describing (index-driven) — future off-window schedules (another bubble, a shifted calendar) just work.
+- The gate cadence (count-vs-expected + completeness + per-game quarantine) is the reusable template for any future bulk source load.
+
+### Reflection gate decisions
+- Decades did NOT all match the 1970s template — the COVID seasons were genuinely structurally different and needed the enumeration fix. No GHA run failed terminally (transient 504/timeout retries held). Row counts per era matched known schedules (incl. the 2012 lockout 1074 and the compressed 2021 1080-game regular season).
+
+---
+
 ### Phase 5 — Parity validation (~1 session, ~2 hours)
 
 **Goal**: prove `ZK_NBA_V2` is at least as good as `ZK_NBA` before swap.
@@ -580,6 +602,20 @@ Tasks:
 **Reflection gate ✋**
 - Any spot checks that don't match? Bug or expected? (Sometimes BR's values legitimately differ from NBA Stats API by a few decimal places.)
 - Is V2 *worse* than V1 on any dimension? If yes, must be addressed before cutover.
+
+## Phase 5 Reflection — 2026-06-17 (in progress)
+
+### Done
+- **Famous-game spot-checks: 5/5 exact** across eras — 5-OT Bucks-Sonics (155-154), 6-OT INO@ROC 1951 (75-73, longest ever), Kobe's 81 (LAL 122-104), 2016 G7 (CLE 93-89), 1980 Finals G6 (LAL 123 @ PHI 107). Spanning 1951→2025.
+- **The motivating query works**: "NBA Finals this week in history" returns 52 games (Jun 14–20) across 79 seasons with verified scores — the original user goal, answerable. Enabled by `ROUND`/`GAME_DATE` as first-class game columns (no join/parse needed).
+- **Legacy-caveat provenance backfilled**: all **110 data_caveats now carry full provenance** (was 42 unsigned pre-strict caveats). Each signed with an individual, evidence-grounded note recomputed per-game from our own data (commit `bbccaa2`, `dev/_remediate_provenance.py`). Two games where BR self-contradicts by 2 pts were researched against an independent source and **resolved in opposite directions** — `195403010MLH` stored final was WRONG (corrected 71→73), `196312060SFW` stored final was RIGHT (line-score 103 is the artifact). Naive majority-vote would have gotten SFW wrong; only the independent source settled both.
+
+### Remaining before cutover
+- V1-vs-V2 row-count comparison per season (`ZK_NBA` still exists); expected V2 ≥ V1.
+- Career-total spot-checks (LeBron points, Russell rebounds) + new-table checks if/when those tables are built.
+
+### Reflection gate ✋
+- No spot-check mismatched. The one V2 data error found (MLH final) was an *inherited BR game-header artifact*, now corrected with evidence — V2 is strictly better than the BR source on that game.
 
 ---
 

@@ -293,6 +293,37 @@ Quarter completeness is a `recording_ramp` (incomplete early eras, ~full modern)
 flags incompleteness only in a season that is otherwise ≥90% complete (a real anomaly),
 treating a uniformly-sparse season as the documented ramp.
 
+### Schedule enumeration — read months from the season index, not a fixed window (2026-06-17)
+A season's games are split across **monthly** schedule pages
+`/leagues/{lg}_{season}_games-{month}.html`. Enumerating a hardcoded Oct–June window
+(the old `SEASON_MONTHS`) **silently drops any game outside it** — invisible because the
+loaded games are each internally perfect; only a count-vs-known-schedule check exposes
+the gap. Two COVID-distorted seasons proved it:
+- **2020** — the Orlando bubble pushed play into **July, August, September** and a **dual
+  October**: BR splits the season-start and the (Oct 11) Finals into `*-games-october-2019.html`
+  and `*-games-october-2020.html`. A plain `*-october` fetch returns ONLY October 2019, so a
+  fixed month list can't even *name* the Finals page. 172 games (incl. all playoffs) were missing.
+- **2021** — the pandemic-shifted Finals ran into **July** (`*-games-july.html`); 8 games missing.
+
+Fix: the season **index** `/leagues/{lg}_{season}_games.html` lists its own month-filter
+links — `_season_month_pages()` parses those and enumerates exactly them (commit `a586832`),
+so off-window schedules are read, not assumed. Verified across BAA→modern; an all-79-season
+audit confirmed only 2020/2021 were ever affected.
+
+### Legacy caveat provenance remediation (full history) — 2026-06-17
+At the post-backfill gate, 42 caveats predated the strict-guardrail provenance system
+(observation but no `reviewed_by`). All re-reviewed per-game with evidence recomputed from
+our own loaded data and signed (`dev/_remediate_provenance.py`, commit `bbccaa2`) → **110/110
+data_caveats now carry full provenance**. Evidence framings: line-score discrepancies (quarters
+incomplete but final corroborated 3 ways: line total == BR game final == box-score sum);
+reconciliation discrepancies (player box missing historical rows; BR team total authoritative);
+collisions (distinct same-name players). **Two games where BR self-contradicts by 2 pts** were
+researched against an independent source (landofbasketball.com) and resolved in **opposite**
+directions — `195403010MLH` stored final 71 was WRONG (corrected to 73; BR box+line + independent
+all agree), `196312060SFW` stored final 101 was RIGHT (the line-score 103 is the artifact). The
+lesson: when a source contradicts itself, internal majority-vote is unsafe — only an independent
+source settles it.
+
 ---
 
 ## 3. Cross-page navigation map
