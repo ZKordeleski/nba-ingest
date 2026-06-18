@@ -310,6 +310,31 @@ links — `_season_month_pages()` parses those and enumerates exactly them (comm
 so off-window schedules are read, not assumed. Verified across BAA→modern; an all-79-season
 audit confirmed only 2020/2021 were ever affected.
 
+### DNP zero-coercion (2025) + NBA Cup Championship mis-tag — 2026-06-18
+Two modern-data defects found by the post-backfill audit + an analyst-query validation pass:
+
+**DNP zero-coercion (2025 only):** the Phase-2 pilot-load basic-box flattener wrote DNP/inactive
+players' stats as `0` instead of `NULL` (~6,843 rows, all box columns except `plus_minus`) —
+violating NULL!=0. Comprehensively scoped to 2025 alone (1997-2024 NULL correctly; advanced box
+NULLs correctly; early-era "hits" are minutes-proxy false positives). Externally validated (BR
+boxscore `202410220BOS` lists "Baylor Scheierman Did Not Play"). Fixed by re-loading 2025 with the
+current flattener. NOTE the discriminator is `minutes_played` (real 0s — played, scored 0 — have
+minutes>0; ~1,325 exist in 2025), never the 0-ness of stats; ~11 sub-minute cameos (e.g. a 2-FT,
+0:00 line) are real and correctly kept.
+
+**NBA Cup Championship counted as Regular Season (2024 + 2025):** the Cup Championship game is the
+ONLY tournament game that does NOT count toward regular-season stats or standings (group + knockout
++ semifinals all DO count — validated via NBA.com/Wikipedia/ESPN). Our schedule-index enumeration
+captures it (good — it's a real game) but tagged it `Regular Season`, polluting the ~51 finalist
+player-lines and inflating the RS game count to 1231 (vs 1230). Detection nuance: BR's scorebox_meta
+labels it **`NBA Cup`** — but the **semifinals carry the identical label** and are also at the
+neutral Las Vegas site, so the championship is distinguishable only as the **latest NBA-Cup game of
+the season**. Fix applied: re-tagged `season_type='NBA Cup Championship'` on the two games
+(`202312090LAL`, `202412170OKC`) + their `player_box_basic` rows, which restores exact official
+values (SGA 76 GP / 32.7 / 51.9; Giannis 67 / 30.4). Games: `202312090LAL` (2023, LAL beat IND),
+`202412170OKC` (2024, MIL beat OKC 97-81, Giannis tourney MVP). Durable ingest auto-tagging is a
+tracked backlog item.
+
 ### Legacy caveat provenance remediation (full history) — 2026-06-17
 At the post-backfill gate, 42 caveats predated the strict-guardrail provenance system
 (observation but no `reviewed_by`). All re-reviewed per-game with evidence recomputed from
