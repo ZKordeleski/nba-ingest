@@ -99,6 +99,15 @@ def main():
             if quarantined:
                 v2.insert_quarantine(cur, quarantined)
             conn.commit(); cur.close()
+        # NBA Cup Championship doesn't count toward regular-season stats — re-tag it
+        # out of Regular Season for any settled season. Idempotent (safe mid-tournament:
+        # tags only once the final, a single game on the latest Cup date, is loaded).
+        cur = conn.cursor()
+        for season in series_by_season:
+            gid = v2.tag_cup_championship(cur, season)
+            if gid:
+                log.info("tagged NBA Cup Championship: %s (season %d)", gid, season)
+        conn.commit(); cur.close()
     finally:
         conn.close()
     print(f"\nDONE. settled={n_ok} quarantined={n_q}")

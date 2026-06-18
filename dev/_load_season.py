@@ -140,6 +140,13 @@ def main():
             cur = conn.cursor()
             v2.insert_quarantine(cur, quarantined)
             conn.commit(); cur.close()
+        # NBA Cup Championship (>=2024) doesn't count toward regular-season stats —
+        # re-tag it out of Regular Season now the season's Cup games are loaded.
+        cur = conn.cursor()
+        gid = v2.tag_cup_championship(cur, season)
+        conn.commit(); cur.close()
+        if gid:
+            log.info("tagged NBA Cup Championship: %s", gid)
     finally:
         conn.close()
 

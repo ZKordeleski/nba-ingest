@@ -166,6 +166,56 @@ def parse_arena(soup: BeautifulSoup) -> tuple[str | None, str | None, str | None
     return None, None, None
 
 
+def parse_event(soup: BeautifulSoup) -> str | None:
+    """The scorebox event label, when present — e.g. "NBA Cup" on tournament games.
+
+    BR prefixes the scorebox_meta of NBA Cup games (group, knockout, semifinal, AND
+    the championship) with an "NBA Cup" segment; normal games begin with the date/time.
+    The label does NOT distinguish the championship from a semifinal — both read
+    "NBA Cup" — so it only marks a game as a tournament game; tag_cup_championship()
+    isolates the championship by date/structure.
+    """
+    meta = soup.find("div", class_="scorebox_meta")
+    if not meta:
+        return None
+    first = next((s.strip() for s in meta.get_text("|").split("|") if s.strip()), "")
+    # the leading segment is an event label only if it isn't a date/time and isn't
+    # an arena ("City, State" carries a comma)
+    if first and "," not in first and not (("AM" in first or "PM" in first) and re.search(r"\d{4}", first)):
+        return first
+    return None
+
+
+def tag_cup_championship(cur, season: int) -> str | None:
+    """Re-tag the NBA Cup Championship out of Regular Season (it is the only Cup game
+    excluded from regular-season stats/standings — group/knockout/semifinals all count).
+
+    The championship is the SINGLE game on the latest `round='NBA Cup'` date of the
+    season; the two semifinals share an earlier date (and the same "NBA Cup" label), so
+    we tag only when the latest Cup date has exactly one game. Idempotent: any prior
+    championship tag for the season is reset first, so a daily run mid-tournament (semis
+    loaded, final not yet) leaves nothing mis-tagged and the post-final run converges.
+    Only applies from 2024 (the tournament's first season). Returns the tagged game_id.
+    """
+    if season < 2024:
+        return None
+    # reset any stale championship tag (keeps the function convergent across daily runs)
+    for t in ("games", "player_box_basic"):
+        cur.execute(f"UPDATE ZK_NBA_V2.FLAT.{t} SET season_type='Regular Season' "
+                    f"WHERE season=%s AND season_type='NBA Cup Championship'", (season,))
+    cur.execute("""SELECT game_id FROM ZK_NBA_V2.FLAT.games
+                   WHERE season=%s AND round='NBA Cup'
+                     AND game_date = (SELECT MAX(game_date) FROM ZK_NBA_V2.FLAT.games
+                                      WHERE season=%s AND round='NBA Cup')""", (season, season))
+    latest = [r[0] for r in cur.fetchall()]
+    if len(latest) != 1:  # 0 = no Cup games yet; >1 = semifinal date (final not loaded)
+        return None
+    gid = latest[0]
+    cur.execute("UPDATE ZK_NBA_V2.FLAT.games SET season_type='NBA Cup Championship' WHERE game_id=%s", (gid,))
+    cur.execute("UPDATE ZK_NBA_V2.FLAT.player_box_basic SET season_type='NBA Cup Championship' WHERE game_id=%s", (gid,))
+    return gid
+
+
 def _starters(basic_df):
     """Names above the 'Reserves' separator. Returns None (unknown) if there is
     NO separator — some old box scores (Phase 3: ~28% of 1972-73) omit it, and
@@ -430,6 +480,13 @@ def build_game(slug, season, series_rows, approve=False):
     season_type, round_, gis = parse_round_from_h1(h1)
     series_slug = match_series(round_, home, away, series_rows)
     arena = parse_arena(soup)
+    # NBA Cup games are regular-season-dated (the h1 gives round=None); BR's scorebox
+    # marks them "NBA Cup". Record that in `round` so tag_cup_championship() can find
+    # them post-load. season_type stays Regular Season here — group/knockout/semifinals
+    # all count; only the championship is corrected afterward (it doesn't count toward
+    # regular-season stats/standings).
+    if round_ is None and parse_event(soup) == "NBA Cup":
+        round_ = "NBA Cup"
     anchors = _extract_player_anchors(html)
     meta = _parse_meta(html)
 
