@@ -661,7 +661,7 @@ forward, ahead of the rename, since they're git-recoverable and were cluttering)
 - ✅ Also deleted: V1 `jobs/daily_settle.py` + `jobs/backfill.py` + their workflows (`daily_settle.yml`, `backfill.yml`) — superseded by `dev/_settle.py` / `dev/_backfill.py` + the v2 workflows. (The plan's "simplify daily_settle.py" bullet is moot — it's deleted, not simplified.)
 - ⏳ Drop `JB_HISTORIC_NBA` references from `docs/SETUP.md` and `README.md` — **PENDING**: README/SETUP still describe the V1 JB-seed setup; needs a rewrite to V2 reality (pure-BR backfill via `v2_backfill.yml`). Scoped follow-up, not code-clutter.
 - ⏳ Update `HANDOFF.md` with a "rebuild complete" entry; preserve the data-quality audit section as historical context — **PENDING**.
-- ⏳ Update all table-level COMMENTs to remove "Source boundary" language (one source, one semantic) — **PENDING**.
+- ✅ Update all table-level COMMENTs to remove "Source boundary" language (one source, one semantic) — **N/A for V2** (verified 2026-06-22): the V2 FLAT tables were built fresh from `sql/v2/010_ddl.sql` with V2-accurate comments (GAMES/PLAYER_BOX_BASIC already say "Single-source (BR)"); 0 column comments carry source-mash language and there's no `source` column. This was only ever a V1 (`ZK_NBA`) chore, and V1 drops at the rename.
 
 Deferred enrichments: **worklist is the [Deferred backlog](#deferred-backlog-tracked)** — pull rows whose trigger has fired (play-by-play, shot charts, coaches, awards/standings/leaders, salary, college stats, etc.). Do not maintain a separate list here.
 
