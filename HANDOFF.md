@@ -1,6 +1,23 @@
 # Handoff: State of nba-ingest
 
-Written 2026-05-14, updated same day after the seed-execution pass. This document is the **single source of truth** for what's been validated, what's broken, and what to do next. Supersedes `docs/plan.md` for current state.
+> ## ✅ Rebuild complete (2026-06-22)
+> The pure-Basketball-Reference rebuild is done. **Full history 1946-47 → 2025-26 is
+> loaded** (~72K games), DNP discipline and NBA Cup Championship handling are correct in
+> the spine, the daily cron (`v2_daily.yml`) is live against `ZK_NBA_V2`, and the audit is
+> clean (quarantine empty; all caveats carry human provenance). The only remaining step is
+> the deferred `ZK_NBA_V2 → ZK_NBA` rename (`REBUILD_PLAN.md` Phase 6).
+>
+> **Current sources of truth:** [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) (how it
+> works), [`docs/REBUILD_METHOD.md`](docs/REBUILD_METHOD.md) (why), and
+> [`docs/REBUILD_PLAN.md`](docs/REBUILD_PLAN.md) (history + backlog + cutover).
+>
+> **Everything below is the V1 / early-rebuild session log, kept as historical context**
+> (the JB-seed era, the source-mash that the rebuild replaced). It does not describe the
+> current system.
+
+---
+
+Written 2026-05-14, updated same day after the seed-execution pass. This document *was* the single source of truth for the V1 build; for current state see the docs linked above.
 
 ---
 

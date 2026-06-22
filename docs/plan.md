@@ -1,5 +1,10 @@
 # NBA Ingest Plan
 
+> ⚠️ **SUPERSEDED — historical.** This is the original V1 plan (JB-seed + source-mash).
+> The project was rebuilt pure-Basketball-Reference; the current plan is
+> [`REBUILD_PLAN.md`](REBUILD_PLAN.md) and the architecture is
+> [`ARCHITECTURE.md`](ARCHITECTURE.md). Kept for history only.
+
 > **Status (2026-05-14):** Slice 0 complete (JB_HISTORIC_NBA surveyed and validated). Slice 1 pending (ZK_NBA bootstrap + JB seed). All SQL and Python scaffolding written — ready to execute.
 
 ---
