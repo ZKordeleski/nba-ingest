@@ -5,7 +5,7 @@ handles BEGIN...END Scripting blocks and inline -- comments correctly.
 
 Usage:
     python dev/apply_sql.py sql/001_bootstrap.sql
-    python dev/apply_sql.py sql/050_seed_from_jb/002_games.sql
+    python dev/apply_sql.py sql/v2/054_line_score_ot56.sql
 """
 
 from __future__ import annotations

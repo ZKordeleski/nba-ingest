@@ -5,15 +5,15 @@ name: V2 Daily Settle
 # days (catches late-posted box scores) through the shared v2 spine: correct
 # season_type/round, bad-data guard, NULL discipline. Checkpoint => safe re-runs.
 #
-# MANUAL (workflow_dispatch) for now — at CUTOVER, add the `schedule` block below
-# and disable the V1 daily_settle cron, so new games keep flowing correctly into
-# the renamed DB instead of reintroducing the V1 bug.
-#
-# At cutover, enable the daily schedule:
-#   schedule:
-#     - cron: '0 9 * * *'   # 09:00 UTC, after the (then-retired) V1 cron
+# ACTIVE daily cron (2026-06-22): this is now the sole daily ingest — the V1
+# daily_settle cron was retired and deleted. ZK_NBA_V2 is the actively-maintained DB;
+# the ZK_NBA_V2 -> ZK_NBA rename remains a separate, deliberate step (tracked in
+# REBUILD_PLAN). Settling into V2 before the rename is correct: the rename just swaps
+# the name, and V2 stays current in the meantime.
 
 on:
+  schedule:
+    - cron: '0 9 * * *'   # 09:00 UTC daily
   workflow_dispatch:
     inputs:
       days:

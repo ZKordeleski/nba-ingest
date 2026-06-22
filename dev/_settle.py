@@ -1,13 +1,15 @@
 """V2 daily ingest — settle recent games into ZK_NBA_V2.
 
-The cutover-correct replacement for V1 `jobs/daily_settle.py` (which carries the
-LEFT(game_id,1) season_type/round bug). Enumerates games by DATE (handles any
-in-season day, including playoffs) and loads them through the shared v2 spine, so
-every new game gets correct season_type/round, the bad-data guard, and NULL
-discipline. Checkpoint skips already-loaded games, so re-running is a safe no-op.
+The daily ingest for ZK_NBA_V2 — and now the SOLE daily cron (it replaced the V1
+`jobs/daily_settle.py`, since deleted, which carried the LEFT(game_id,1) season_type/
+round bug). Enumerates games by DATE (handles any in-season day, including playoffs)
+and loads them through the shared v2 spine, so every new game gets correct season_type/
+round, the bad-data guard, NULL discipline, and NBA Cup Championship tagging. Checkpoint
+skips already-loaded games, so re-running is a safe no-op.
 
-This is the BLOCKER named in the Phase 6 cutover note: it must be the cron BEFORE
-ZK_NBA_V2 is renamed to ZK_NBA, or new games would reintroduce the V1 bug.
+This cron is now ACTIVE (v2_daily.yml, 2026-06-22) and the V1 daily_settle cron is
+retired. The ZK_NBA_V2 -> ZK_NBA rename remains a separate, deliberate step; settling
+into V2 before the rename is correct (the rename only swaps the name).
 
 Usage:
     .venv/bin/python dev/_settle.py --days 2          # settle the last 2 days

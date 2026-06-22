@@ -630,15 +630,19 @@ Blast radius lesson: the DNP coercion corrupted ONLY naive `COUNT(*)`-as-games-p
 
 **Clean swap. No parallel persistence; once the old is dead it's dead.**
 
-```sql
-USE ROLE ACCOUNTADMIN;  -- needed for RENAME at database level
-DROP DATABASE ZK_NBA;             -- gone
-ALTER DATABASE ZK_NBA_V2 RENAME TO ZK_NBA;
-```
+> **STATUS (2026-06-22): prerequisites DONE — only the rename remains (the standing TODO; deliberately deferred).**
+> - ✅ V2 is data-complete + current (full 1947–2026 incl. the just-finished 2025-26 season; verified in sync with V1 through the season's end).
+> - ✅ The cron BLOCKER is resolved: the V2 daily cron (`v2_daily.yml`) is **active**, and the V1 `daily_settle` cron + `jobs/daily_settle.py` are **retired and deleted**. New games now flow through the correct V2 spine (DNP NULL, Cup-Championship tagging) regardless of the rename.
+> - ⏳ **REMAINING — the rename itself** (the only irreversible step). Run when ready:
+> ```sql
+> USE ROLE ACCOUNTADMIN;  -- needed for RENAME at database level
+> DROP DATABASE ZK_NBA;             -- gone
+> ALTER DATABASE ZK_NBA_V2 RENAME TO ZK_NBA;
+> ```
 
 - Same Snowflake account, role, warehouse, DB name post-rename. **No GHA secret changes needed.**
-- ⚠️ **BLOCKER — the daily cron must be on V2 logic BEFORE this rename.** `daily_settle.py` is V1 code (the `LEFT(game_id,1)` season_type/round bug). A rename alone leaves the cron writing *new* games into the renamed DB with the old broken logic — silently re-introducing the exact bug the rebuild fixed, one day after cutover. Cutover prerequisite: ship the V2 daily-ingest "settle today" path (Deferred backlog → "V2 daily-ingest path") on the `_load_season.py` spine, point the cron at it, then rename. This is the difference between a fixed dataset and a fixed *pipeline*.
-- Restart daily cron (it'll fire next at 8:30 UTC).
+- The cron is already on V2 logic (the original BLOCKER) — so the rename is now a pure name-swap. At rename, the active `v2_daily.yml` keeps settling into the (renamed) DB with no change needed.
+- NOTE the daily cron settles into `ZK_NBA_V2` by name; after the rename, update `dev/_settle.py` / `v2_daily.yml` to target `ZK_NBA` (or rename V2's references) so the cron follows the renamed DB.
 
 **Reflection gate ✋**
 - First post-cutover cron run: did it succeed? Was the data clean?
@@ -648,15 +652,16 @@ ALTER DATABASE ZK_NBA_V2 RENAME TO ZK_NBA;
 
 ### Phase 7 — Cleanup + deferred enrichments (~1-2 hours active + optional follow-ups)
 
-Hard cleanup (active, do these immediately after cutover):
-- Delete `sql/050_seed_from_jb/` directory entirely
-- Delete `sql/060_xref_setup.sql` JB-seeding step (xref tables now populated by resolvers directly)
-- Drop `JB_HISTORIC_NBA` references from `docs/SETUP.md` and `README.md`
-- Delete `dev/_backfill_br_*.sql` (no longer relevant)
-- Delete `dev/_dedup_player_box.sql` (no longer relevant)
-- Simplify `daily_settle.py`'s `_resolve_team_ids_for_game()` — drop the `WHERE source = 'br_scrape'` filter (everything's BR now)
-- Update `HANDOFF.md` with a "rebuild complete" entry; preserve the data-quality audit section as historical context
-- Update all table-level COMMENTs to remove "Source boundary" language (one source, one semantic)
+Hard cleanup — **partially DONE 2026-06-22** (the dead-code deletions were brought
+forward, ahead of the rename, since they're git-recoverable and were cluttering):
+- ✅ Delete `sql/050_seed_from_jb/` directory entirely
+- ✅ Delete `sql/060_xref_setup.sql` JB-seeding step (xref tables now populated by resolvers directly)
+- ✅ Delete `dev/_backfill_br_*.sql` (no longer relevant)
+- ✅ Delete `dev/_dedup_player_box.sql` (no longer relevant)
+- ✅ Also deleted: V1 `jobs/daily_settle.py` + `jobs/backfill.py` + their workflows (`daily_settle.yml`, `backfill.yml`) — superseded by `dev/_settle.py` / `dev/_backfill.py` + the v2 workflows. (The plan's "simplify daily_settle.py" bullet is moot — it's deleted, not simplified.)
+- ⏳ Drop `JB_HISTORIC_NBA` references from `docs/SETUP.md` and `README.md` — **PENDING**: README/SETUP still describe the V1 JB-seed setup; needs a rewrite to V2 reality (pure-BR backfill via `v2_backfill.yml`). Scoped follow-up, not code-clutter.
+- ⏳ Update `HANDOFF.md` with a "rebuild complete" entry; preserve the data-quality audit section as historical context — **PENDING**.
+- ⏳ Update all table-level COMMENTs to remove "Source boundary" language (one source, one semantic) — **PENDING**.
 
 Deferred enrichments: **worklist is the [Deferred backlog](#deferred-backlog-tracked)** — pull rows whose trigger has fired (play-by-play, shot charts, coaches, awards/standings/leaders, salary, college stats, etc.). Do not maintain a separate list here.
 
@@ -691,7 +696,7 @@ Single source of truth for everything we consciously *chose not to build yet*. A
 | **Normalized `line_score_periods` table** | (game, team, period, points) · re-derive from box | The wide `line_scores` (~26 per-period columns: q1-4, ot1-6, ×2) is the *repeating-groups* anti-pattern — forced an `ot5/ot6` schema bump for the 5/6-OT games (2026-06-14) and an `or`-fallback that dropped 0-point OTs to NULL. A long table (one row per period) handles any OT count with no schema churn, stores 0 faithfully, represents absence as absent rows, and is era-agnostic (BAA halves too). Migration would also re-derive pre-2010 games whose 0-point OTs landed NULL under the old `or` bug. | Zack's architectural prompt 2026-06-14; do as a deliberate refactor (not mid-backfill) — wide model is *complete* for NBA history now (6 OT max) | Deferred |
 | BAA team nicknames for `series_slug` linkage | (abbr → nickname) · BAA playoff slugs | BAA defunct teams (PHW, CHS, NYK, WSC, CLR, DTF, PIT, BOS, PRO, STB, TRH, ...) unmapped in `TEAM_NICKNAMES`, so BAA playoff games (season≤1949) load with correct round but `series_slug=NULL`. Documented in `metric_coverage` (`series_slug`, status `enrichment_pending`) + the `games.series_slug` column comment. | BAA playoff-series queries, or full-history series-linkage pass | Deferred |
 | Transient vs permanent quarantine | (orchestrator) | a network-error quarantine is currently treated as "done" by the checkpoint, so it won't auto-retry | Phase 3 (long historical runs need self-healing retries) | Deferred |
-| **V2 daily-ingest path (`settle` mode)** | orchestrator · `_load_season.py` spine | **Cutover prerequisite**: the current daily cron is V1 (`daily_settle.py` with the `LEFT(game_id,1)` bug); after rename it would write new games with the old broken logic and re-introduce the season_type/round bug. Needs a "settle today" mode on the V2 spine. | **Before Phase 6 cutover** | **Built** — `dev/_settle.py` + `.github/workflows/v2_daily.yml` (manual now; enable the cron + retire the V1 cron AT cutover) |
+| **V2 daily-ingest path (`settle` mode)** | orchestrator · `_load_season.py` spine | **Cutover prerequisite**: the current daily cron is V1 (`daily_settle.py` with the `LEFT(game_id,1)` bug); after rename it would write new games with the old broken logic and re-introduce the season_type/round bug. Needs a "settle today" mode on the V2 spine. | **Before Phase 6 cutover** | **DONE (2026-06-22)** — `dev/_settle.py` + `.github/workflows/v2_daily.yml` cron is **active**; V1 `daily_settle` cron + `jobs/daily_settle.py` retired+deleted. Post-rename: point `_settle.py` at the renamed `ZK_NBA`. |
 | Coverage-aware guardrail views (per stat) | `DERIVED.*` · joins `metric_coverage` | `vw_career_steals_leaders` seeds the pattern; blocks/tov/3P/leaders want the same era-scoping so aggregations never sum a not-tracked NULL as 0 | when a leaderboard / career-total query class is needed | Seeded (steals) |
 | Reload-on-fix path for loaders | orchestrator | checkpoint skips already-loaded `game_id`s, so a flatten fix does NOT propagate to loaded games without manual deletion; want a `--reload` / logic-version stamp | when a flatten bug is fixed after a load | Deferred |
 | `player_id` name-collision (same-name players) | flattener · `_extract_player_anchors` `{name: slug}` | two DISTINCT players with identical display names in one game collapse to one resolved slug (Phase 3 gut-check: two "George Johnson", GSW vs HOU, both `johnsge02`). Needs per-row slug resolution instead of a name→slug dict. Rare (~1 in 31k); do NOT dedup (drops a real player). | when frequency warrants, or Phase 7 | Deferred |
