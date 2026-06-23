@@ -40,4 +40,6 @@ jobs:
           SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
           SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
           SNOWFLAKE_DATABASE: ZK_NBA_V2
-        run: python dev/_settle.py --days ${{ inputs.days }}
+        # `inputs.days` only exists on workflow_dispatch; on the schedule trigger it is
+        # empty, so fall back to 2 (the dispatch default) to keep `--days` well-formed.
+        run: python dev/_settle.py --days ${{ inputs.days || '2' }}
