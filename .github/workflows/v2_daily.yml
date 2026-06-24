@@ -17,9 +17,8 @@ on:
   workflow_dispatch:
     inputs:
       days:
-        description: 'Settle the last N days'
+        description: 'Override the window: settle the last N days (blank = tool default, 2)'
         required: false
-        default: '2'
 
 jobs:
   settle:
@@ -40,6 +39,8 @@ jobs:
           SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
           SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
           SNOWFLAKE_DATABASE: ZK_NBA_V2
-        # `inputs.days` only exists on workflow_dispatch; on the schedule trigger it is
-        # empty, so fall back to 2 (the dispatch default) to keep `--days` well-formed.
-        run: python dev/_settle.py --days ${{ inputs.days || '2' }}
+          DAYS: ${{ inputs.days }}   # set only on workflow_dispatch; empty on schedule
+        # Pass --days ONLY when overriding; otherwise the tool's own default (2) applies.
+        # `${DAYS:+--days $DAYS}` => empty when DAYS is unset/blank (schedule), so the run
+        # is trigger-agnostic and the default lives in one place (dev/_settle.py).
+        run: python dev/_settle.py ${DAYS:+--days $DAYS}

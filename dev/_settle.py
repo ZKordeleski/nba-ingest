@@ -47,17 +47,20 @@ def season_of(d: date) -> int:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--days", type=int, default=0, help="settle the last N days (incl. today)")
-    ap.add_argument("--date", help="settle a single date YYYY-MM-DD")
+    # --days defaults to 2 so a BARE `python dev/_settle.py` does the sensible cron thing
+    # (settle the last 2 days, catching late-posted box scores). The default lives HERE,
+    # in the tool — orchestrators (v2_daily.yml) pass --days only to override, and never
+    # have to supply it just to be well-formed. (A bare invocation used to error.)
+    ap.add_argument("--days", type=int, default=2,
+                    help="settle the last N days, incl. today (default 2)")
+    ap.add_argument("--date", help="settle a single date YYYY-MM-DD (overrides --days)")
     args = ap.parse_args()
 
     if args.date:
         dates = [datetime.strptime(args.date, "%Y-%m-%d").date()]
-    elif args.days:
-        today = date.today()
-        dates = [today - timedelta(days=i) for i in range(args.days)]
     else:
-        ap.error("provide --days N or --date YYYY-MM-DD")
+        today = date.today()
+        dates = [today - timedelta(days=i) for i in range(max(args.days, 0))]
 
     conn = connect()
     try:
