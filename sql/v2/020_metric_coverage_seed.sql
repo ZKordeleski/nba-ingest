@@ -16,12 +16,15 @@ USE SCHEMA FLAT;
 USE WAREHOUSE NBA_INGEST_WH;
 
 INSERT INTO metric_coverage (metric, column_ref, first_tracked_season, status, null_means, authority) VALUES
-    -- Always tracked since the BAA's first season (1946-47).
-    ('pts',  'player_box_basic.pts / games.*_pts',     NULL, 'always',         NULL, 'tracked since 1946-47'),
-    ('fg',   'player_box_basic.fgm/fga',               NULL, 'always',         NULL, 'tracked since 1946-47'),
-    ('ft',   'player_box_basic.ftm/fta',               NULL, 'always',         NULL, 'tracked since 1946-47'),
-    ('trb',  'player_box_basic.reb',                   NULL, 'always',         NULL, 'total rebounds since 1950-51; treat pre-1951 as not recorded'),
-    ('pf',   'player_box_basic.pf',                    NULL, 'always',         NULL, 'tracked since 1946-47'),
+    -- Always tracked since the BAA's first season (1946-47). On a player-game row, a NULL
+    -- is NOT an era gap and NOT an ingestion gap — it means the player DID NOT PLAY (DNP/
+    -- inactive). Cross-check minutes_played (NULL/0) + game_inactives. A NULL alongside
+    -- minutes_played>0 WOULD be a real gap (anomaly worth flagging). Never 0 for not-recorded.
+    ('pts',  'player_box_basic.pts / games.*_pts',     NULL, 'always',         'player-game NULL = player did not play (DNP/inactive); cross-check minutes_played (NULL/0) + game_inactives. NULL with minutes_played>0 = a real gap (anomaly). Never 0 for not-recorded.', 'tracked since 1946-47'),
+    ('fg',   'player_box_basic.fgm/fga',               NULL, 'always',         'player-game NULL = player did not play (DNP/inactive); see minutes_played + game_inactives. NULL with minutes_played>0 = a real gap.', 'tracked since 1946-47'),
+    ('ft',   'player_box_basic.ftm/fta',               NULL, 'always',         'player-game NULL = player did not play (DNP/inactive); see minutes_played + game_inactives. NULL with minutes_played>0 = a real gap.', 'tracked since 1946-47'),
+    ('trb',  'player_box_basic.reb',                   NULL, 'always',         'Pre-1950-51: total rebounds not recorded (era). From 1950-51: player-game NULL = player did not play (DNP/inactive), per minutes_played + game_inactives.', 'total rebounds since 1950-51; treat pre-1951 as not recorded'),
+    ('pf',   'player_box_basic.pf',                    NULL, 'always',         'player-game NULL = player did not play (DNP/inactive); see minutes_played + game_inactives. NULL with minutes_played>0 = a real gap.', 'tracked since 1946-47'),
     -- RECORDING RAMPS: these stats existed but old box scores logged them sparsely
     -- (Phase 4 audit: ast 58% NULL in 1960 -> 0% modern; mp 77% -> 19.5%; is_starter
     -- 98% -> 0%). A NULL = not-recorded-this-player/game, never 0. NOT 'always'.
